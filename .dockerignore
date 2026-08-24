@@ -5,3 +5,9 @@
 /libs/messages/src/ts-proto-generated/**
 /play/src/messages/generated/**
 /back/src/messages/generated/**
+/.git
+/.hermes
+/bot
+deploy/hermes-agent-platform/.env
+deploy/hermes-agent-platform/secrets/**
+deploy/hermes-agent-platform/runtime/**
