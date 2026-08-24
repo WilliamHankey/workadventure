@@ -53,7 +53,7 @@ Status: completed on 24 August 2026 ([issue #6](https://github.com/WilliamHankey
 
 ## Phase 5 — Lowcoder administration UI
 
-Status: next.
+Status: code-complete and CI-accepted on 24 August 2026; live Lowcoder 2.7.6 import/click-through remains open ([issue #7](https://github.com/WilliamHankey/workadventure/issues/7)).
 
 - Map CRUD UI
 - Agent CRUD UI
@@ -61,6 +61,8 @@ Status: next.
 - No live control or Hermes-run UI
 
 ## Phase 6 — Voice
+
+Status: active.
 
 - Invitation-bound LiveKit audio
 - VAD/STT → Hermes decision → TTS
