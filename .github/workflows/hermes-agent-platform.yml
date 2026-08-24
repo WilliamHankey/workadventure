@@ -36,7 +36,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run ts-proto --workspace=messages
+      - name: Install protobuf generator dependencies
+        run: npm ci
+        working-directory: messages
+      - name: Generate WorkAdventure protocol bindings
+        run: npm run ts-proto
+        working-directory: messages
       - run: npm run typesafe-i18n --workspace=workadventure-play
       - run: npm run typecheck --workspace=@workadventure/hermes-connector-protocol
       - run: npm run lint --workspace=@workadventure/hermes-connector-protocol
