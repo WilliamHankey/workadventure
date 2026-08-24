@@ -70,13 +70,15 @@ Status: code-complete and CI-accepted on 24 August 2026; real LiveKit/Hermes Des
 
 ## Phase 7 — Virtual video
 
-Status: active.
+Status: code-complete and CI-accepted on 24 August 2026; real LiveKit video remains a Phase 9 pilot gate ([issue #9](https://github.com/WilliamHankey/workadventure/issues/9)).
 
 - Synthetic Woka/avatar track
 - Hermes-controlled publication
 - Camera-state synchronization and CPU limits
 
 ## Phase 8 — Browser compatibility
+
+Status: active.
 
 - On-demand Playwright pool
 - Supported Scripting API tools for missing parity
