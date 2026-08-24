@@ -41,5 +41,5 @@ Phase 1 must not start until:
 - [ ] the map project exists and its baseline is recorded;
 - [ ] the baseline documentation is reviewed;
 - [ ] tracking issues are enabled/created;
-- [ ] the untouched upstream baseline smoke/build procedure is recorded or run in the connected Codex environment;
+- [x] the untouched upstream baseline smoke/build procedure is recorded or run in the connected Codex environment;
 - [ ] William explicitly accepts the Phase 0 checkpoint.
