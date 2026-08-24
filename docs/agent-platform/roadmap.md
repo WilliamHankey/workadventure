@@ -44,7 +44,7 @@ Status: completed on 24 August 2026 ([issue #5](https://github.com/WilliamHankey
 
 ## Phase 4 — Navigation and owner binding
 
-Status: next.
+Status: completed on 24 August 2026 ([issue #6](https://github.com/WilliamHankey/workadventure/issues/6)).
 
 - WAM/TMJ navigation graph
 - Collision-aware movement
@@ -52,6 +52,8 @@ Status: next.
 - Hermes movement/follow/approach tools
 
 ## Phase 5 — Lowcoder administration UI
+
+Status: next.
 
 - Map CRUD UI
 - Agent CRUD UI
