@@ -4,6 +4,10 @@ The connector runs beside Hermes on William's Windows machine. It discovers API-
 
 Hermes profiles remain separate homes and gateway processes. The connector probes each local gateway's authenticated `/v1/capabilities`, `/health/detailed`, and `/v1/models` endpoints, then routes world events by an immutable agent/profile/session lane.
 
+The connector uses Hermes' documented `/v1/runs` submission, status, and stop endpoints. A run must finish with one strict JSON decision envelope containing an optional message plus zero to eight allowlisted WorkAdventure actions. Hermes' Runs status does not expose pending client-side tool calls, so the connector never relies on an undocumented `tool_calls` field or steers a completed run. It generates correlation IDs locally, executes actions in model order, waits for the matching platform result, and permits at most two observation-only follow-up rounds before failing closed.
+
+The action schema and exact allowed tool list are injected into each run's instructions. Markdown fences, unknown actions, extra envelope fields, mixed observation/mutation batches, stale results, or cross-agent lanes are rejected.
+
 ## Hermes profile prerequisites
 
 For each profile selected as an in-world agent, enable its loopback API server and give it a unique key and port:

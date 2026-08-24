@@ -38,17 +38,46 @@ const RunStatusSchema = z
         run_id: z.string().min(1),
         status: z.enum(["started", "queued", "running", "stopping", "completed", "failed", "cancelled"]),
         output: z.string().nullable().optional(),
-        tool_calls: z
-            .array(
-                z.object({
-                    id: z.string().min(1),
-                    name: AgentToolNameSchema,
-                    arguments: z.record(z.string(), z.unknown()),
-                })
-            )
-            .optional(),
     })
     .passthrough();
+const HermesDecisionSchema = z
+    .object({
+        version: z.literal(1),
+        message: z.string().max(16_000).nullable(),
+        actions: z
+            .array(
+                z
+                    .object({
+                        name: AgentToolNameSchema,
+                        arguments: z.record(z.string(), z.unknown()),
+                    })
+                    .strict()
+            )
+            .max(8),
+    })
+    .strict();
+
+export const parseHermesDecision = (output: string | null | undefined): HermesRunResult => {
+    if (output === undefined || output === null) {
+        throw new Error("Hermes completed without a WorkAdventure decision envelope");
+    }
+    let value: unknown;
+    try {
+        value = JSON.parse(output);
+    } catch {
+        throw new Error("Hermes WorkAdventure decision must be one JSON object without Markdown fences");
+    }
+    const decision = HermesDecisionSchema.parse(value);
+    return {
+        runId: "pending",
+        output: decision.message,
+        toolCalls: decision.actions.map((action) => ({
+            toolCallId: randomUUID(),
+            name: action.name,
+            arguments: action.arguments,
+        })),
+    };
+};
 
 const pause = async (milliseconds: number, signal: AbortSignal): Promise<void> =>
     new Promise((resolve, reject) => {
@@ -128,14 +157,11 @@ export class HermesHttpGateway implements HermesProfileGateway {
             if (status.status !== "completed") {
                 throw new Error(`Hermes run '${start.run_id}' ended with status '${status.status}'`);
             }
+            const decision = parseHermesDecision(status.output);
             return {
                 runId: status.run_id,
-                output: status.output ?? null,
-                toolCalls: (status.tool_calls ?? []).map((toolCall) => ({
-                    toolCallId: toolCall.id,
-                    name: toolCall.name,
-                    arguments: toolCall.arguments,
-                })),
+                output: decision.output,
+                toolCalls: decision.toolCalls,
             };
         } catch (error: unknown) {
             if (signal.aborted) {
@@ -145,20 +171,6 @@ export class HermesHttpGateway implements HermesProfileGateway {
             }
             throw error;
         }
-    }
-
-    async submitToolResult(message: Parameters<HermesProfileGateway["submitToolResult"]>[0]): Promise<void> {
-        await this.request(`/v1/runs/${encodeURIComponent(message.hermesRunId)}/steer`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-                text: JSON.stringify({
-                    workAdventureToolCallId: message.toolCallId,
-                    outcome: message.outcome,
-                    result: message.result,
-                }),
-            }),
-        });
     }
 
     private async get(pathname: string, signal?: AbortSignal): Promise<unknown> {

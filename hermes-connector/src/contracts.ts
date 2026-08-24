@@ -37,7 +37,6 @@ export interface HermesProfileGateway {
         signal: AbortSignal,
         onStarted: (runId: string) => Promise<void>
     ): Promise<HermesRunResult>;
-    submitToolResult(message: Extract<ServerMessage, { type: "tool.result" }>): Promise<void>;
 }
 
 export interface HermesProfileGatewayFactory {

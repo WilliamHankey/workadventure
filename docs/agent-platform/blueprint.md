@@ -13,7 +13,7 @@ Build this as a hybrid agent platform, not as a map script and not as a Lowcoder
 - Hermes remains the agent brain, with one isolated Hermes profile per in-world agent.
 - A new platform service exposes a deliberately narrow administration API to Lowcoder: map CRUD and agent CRUD only.
 - A lightweight Hermes Connector runs next to Hermes Desktop and connects outward to the control plane, so no Hermes key or terminal-capable API is exposed to the public internet.
-- Each active agent is controlled by the model configured in its bound Hermes profile. WorkAdventure events become Hermes input; Hermes tool calls become validated agent actions.
+- Each active agent is controlled by the model configured in its bound Hermes profile. WorkAdventure events become Hermes input; a strict final Hermes decision envelope becomes validated agent actions.
 - The normal runtime is a lightweight headless WorkAdventure protocol client. It creates a real visible participant without one Chromium process per agent.
 - A browser compatibility runtime is available for WorkAdventure actions that cannot be reproduced safely through the headless runtime. This is how the final system reaches full normal-user capability without making every agent expensive.
 - Voice and video are separate media workers attached to the same WorkAdventure identity. Voice uses speech-to-text → Hermes → text-to-speech; video publishes a synthetic avatar camera track.
@@ -130,7 +130,7 @@ flowchart TD
     H["Hermes Desktop + profiles"] -->|outbound authenticated WebSocket| X["Hermes Connector"]
     X <--> C
     C -->|desired agent definitions| R["Runtime Supervisor"]
-    X -->|model tool calls| R
+    X -->|strict action decisions| R
     R -->|world and media events| X
     R --> B["Headless Woka clients"]
     R --> M["Voice/video workers"]
@@ -186,7 +186,7 @@ Runs on the Windows machine beside Hermes Desktop/Agent.
 - checks `/v1/capabilities`, `/health/detailed`, and the profile's advertised model;
 - opens one outbound WSS connection to the control plane;
 - sends WorkAdventure, conversation, and media events to the correct local profile;
-- proxies profile runs/sessions and streams model tool calls and progress back to the platform;
+- proxies profile runs/sessions, validates the final decision envelope, and correlates resulting actions with platform results;
 - applies profile concurrency locks;
 - reports machine sleep/offline state and reconnects with exponential backoff.
 
@@ -196,7 +196,7 @@ The connector should feature-detect Hermes' local `GET /api/profiles` where avai
 
 1. The runtime emits a normalized event such as `message.received`, `user.nearby`, `meeting.joined`, `navigation.completed`, or `voice.transcript`.
 2. The connector sends that event, world context, owner relationship, and current state to the agent's bound Hermes profile/session.
-3. The configured model reasons and either does nothing, answers with text, or emits one or more agent tool calls.
+3. The configured model reasons and returns exactly one JSON decision containing zero or more allowlisted agent actions.
 4. The platform verifies that the tool belongs to the same agent/profile, is allowed by the AgentDefinition, and has valid arguments.
 5. The runtime executes the action and returns an observation/result to Hermes so the model can continue.
 

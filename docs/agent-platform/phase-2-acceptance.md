@@ -10,7 +10,9 @@ Tracker: [issue #4](https://github.com/WilliamHankey/workadventure/issues/4)
 - Authenticated outbound WebSocket transport with exponential reconnect and duplicate-instance replacement.
 - Local default/named profile discovery from Hermes homes, with loopback-only gateway enforcement by default.
 - Authenticated `/v1/capabilities`, `/health/detailed`, and `/v1/models` probes per profile.
-- Hermes `/v1/runs`, stable `X-Hermes-Session-Id`/`X-Hermes-Session-Key`, polling, stop, and tool-result steering adapter.
+- Hermes `/v1/runs`, stable `X-Hermes-Session-Id`/`X-Hermes-Session-Key`, polling, and stop adapter.
+- Strict final JSON decision envelope translated into locally correlated WorkAdventure actions; no reliance on an undocumented Runs `tool_calls` field and no steering of a completed run.
+- Ordered action-result correlation plus at most two observation-only follow-up rounds.
 - One profile gateway object and one bounded event queue per discovered profile.
 - Immutable agent/profile/session/version lanes, capability-derived tool allowlists, cancellation, and stale-lane rejection.
 - Dynamic safe profile metadata in Lowcoder's read-only catalog.

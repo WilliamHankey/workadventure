@@ -66,11 +66,10 @@ class StaticDiscovery implements HermesProfileDiscovery {
 
 class FakeGateway implements HermesProfileGateway {
     readonly runs: Array<{ dispatch: WorldEventDispatch; sessionKey: string }> = [];
-    readonly results: Array<Extract<ServerMessage, { type: "tool.result" }>> = [];
 
     constructor(
         private readonly profile: LocalHermesProfile,
-        private readonly toolName: AgentToolName = "wa_say"
+        private readonly toolNames: AgentToolName[] = ["wa_say"]
     ) {}
 
     probe(): Promise<SafeProfile> {
@@ -94,26 +93,31 @@ class FakeGateway implements HermesProfileGateway {
     ): Promise<HermesRunResult> {
         this.runs.push({ dispatch: structuredClone(dispatch), sessionKey });
         await onStarted(`run-${this.profile.profileId}`);
+        const toolName = this.toolNames[Math.min(this.runs.length - 1, this.toolNames.length - 1)];
         return {
-            runId: `run-${this.profile.profileId}`,
+            runId: `run-${this.profile.profileId}-${String(this.runs.length)}`,
             output: "Hermes chose an in-world action",
-            toolCalls: [{ toolCallId: "tool-1", name: this.toolName, arguments: { text: "Hello" } }],
+            toolCalls:
+                toolName === undefined
+                    ? []
+                    : [
+                          {
+                              toolCallId: `tool-${String(this.runs.length)}`,
+                              name: toolName,
+                              arguments: toolName === "wa_say" ? { text: "Hello" } : {},
+                          },
+                      ],
         };
-    }
-
-    submitToolResult(message: Extract<ServerMessage, { type: "tool.result" }>): Promise<void> {
-        this.results.push(structuredClone(message));
-        return Promise.resolve();
     }
 }
 
 class FakeGatewayFactory implements HermesProfileGatewayFactory {
     readonly gateways = new Map<string, FakeGateway>();
 
-    constructor(private readonly toolName: AgentToolName = "wa_say") {}
+    constructor(private readonly toolNames: AgentToolName[] = ["wa_say"]) {}
 
     create(profile: LocalHermesProfile): HermesProfileGateway {
-        const gateway = new FakeGateway(profile, this.toolName);
+        const gateway = new FakeGateway(profile, this.toolNames);
         this.gateways.set(profile.profileId, gateway);
         return gateway;
     }
@@ -207,18 +211,22 @@ describe("Hermes connector", () => {
 
         await connector.start();
         await transport.deliver(acceptedMessage(["wa_say"]));
-        await transport.deliver(worldEventMessage());
+        const worldEvent = transport.deliver(worldEventMessage());
+        await expect
+            .poll(() => transport.sent.map((message) => ClientMessageSchema.parse(message).type))
+            .toContain("tool.call");
         await transport.deliver({
             ...base,
             messageId: "server-message-3",
             type: "tool.result",
             eventId: "event-1",
             lane,
-            hermesRunId: "run-researcher",
+            hermesRunId: "run-researcher-1",
             toolCallId: "tool-1",
             outcome: "succeeded",
             result: { delivered: true },
         });
+        await worldEvent;
         await connector.stop();
 
         const messages = transport.sent.map((message) => ClientMessageSchema.parse(message));
@@ -233,7 +241,6 @@ describe("Hermes connector", () => {
             name: "wa_say",
         });
         expect(factory.gateways.get("researcher")?.runs).toHaveLength(1);
-        expect(factory.gateways.get("researcher")?.results).toHaveLength(1);
         expect(JSON.stringify(messages)).not.toContain("profile-secret-never-transmitted");
     });
 
@@ -248,7 +255,7 @@ describe("Hermes connector", () => {
                     apiKey: "local-only",
                 },
             ]),
-            new FakeGatewayFactory("wa_start_video"),
+            new FakeGatewayFactory(["wa_start_video"]),
             transport,
             { connectorId: "desktop-1", instanceId: "instance-2" }
         );
@@ -292,6 +299,76 @@ describe("Hermes connector", () => {
         const messages = transport.sent.map((message) => ClientMessageSchema.parse(message));
         expect(messages.at(-1)).toMatchObject({ type: "run.failed", errorCode: "lane_binding_rejected" });
         expect(factory.gateways.get("researcher")?.runs).toHaveLength(0);
+    });
+
+    it("uses a bounded observation round before a final WorkAdventure action", async () => {
+        const transport = new MemoryTransport();
+        const factory = new FakeGatewayFactory(["wa_get_nearby_users", "wa_say"]);
+        const connector = new HermesConnector(
+            new StaticDiscovery([
+                {
+                    profileId: "researcher",
+                    displayName: "Researcher",
+                    baseUrl: "http://127.0.0.1:8643",
+                    apiKey: "local-only",
+                },
+            ]),
+            factory,
+            transport,
+            { connectorId: "desktop-1", instanceId: "instance-observation" }
+        );
+
+        await connector.start();
+        await transport.deliver(acceptedMessage(["wa_get_nearby_users", "wa_say"]));
+        const worldEvent = transport.deliver(worldEventMessage());
+        await expect
+            .poll(() => transport.sent.filter((message) => ClientMessageSchema.parse(message).type === "tool.call"))
+            .toHaveLength(1);
+        await transport.deliver({
+            ...base,
+            messageId: "server-observation-result",
+            type: "tool.result",
+            eventId: "event-1",
+            lane,
+            hermesRunId: "run-researcher-1",
+            toolCallId: "tool-1",
+            outcome: "succeeded",
+            result: { users: [{ userUuid: "owner-1", name: "William" }] },
+        });
+        await expect
+            .poll(() => transport.sent.filter((message) => ClientMessageSchema.parse(message).type === "tool.call"))
+            .toHaveLength(2);
+        expect(factory.gateways.get("researcher")?.runs[1]?.dispatch.event.payload).toMatchObject({
+            workAdventureObservations: [
+                {
+                    name: "wa_get_nearby_users",
+                    outcome: "succeeded",
+                    result: { users: [{ userUuid: "owner-1", name: "William" }] },
+                },
+            ],
+        });
+        await transport.deliver({
+            ...base,
+            messageId: "server-action-result",
+            type: "tool.result",
+            eventId: "event-1",
+            lane,
+            hermesRunId: "run-researcher-2",
+            toolCallId: "tool-2",
+            outcome: "succeeded",
+            result: { delivered: true },
+        });
+        await worldEvent;
+        await connector.stop();
+
+        expect(transport.sent.map((message) => ClientMessageSchema.parse(message).type)).toEqual([
+            "connector.hello",
+            "run.started",
+            "tool.call",
+            "run.started",
+            "tool.call",
+            "run.completed",
+        ]);
     });
 
     it("derives a stable, bounded Hermes memory key per agent conversation", () => {
