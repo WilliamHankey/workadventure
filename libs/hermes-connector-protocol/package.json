@@ -1,0 +1,23 @@
+{
+    "name": "@workadventure/hermes-connector-protocol",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "exports": "./src/index.ts",
+    "scripts": {
+        "typecheck": "tsc --noEmit",
+        "lint": "eslint src",
+        "pretty": "prettier --write 'src/**/*.ts' '*.json'",
+        "pretty-check": "prettier --check 'src/**/*.ts' '*.json'"
+    },
+    "dependencies": {
+        "zod": "^4.4.3"
+    },
+    "devDependencies": {
+        "@types/node": "^25.9.1",
+        "@workadventure/eslint-config": "1.0.0",
+        "eslint": "^9.39.4",
+        "prettier": "^3.8.3",
+        "typescript": "^5.9.3"
+    }
+}

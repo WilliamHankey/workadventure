@@ -42,3 +42,9 @@ export class UnauthorizedError extends DomainError {
         super("unauthorized", "A valid Lowcoder administration bearer token is required", 401);
     }
 }
+
+export class ConnectorUnauthorizedError extends DomainError {
+    constructor() {
+        super("connector_unauthorized", "A valid Hermes Connector registration token is required", 401);
+    }
+}

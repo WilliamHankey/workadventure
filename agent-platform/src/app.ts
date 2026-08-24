@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
+import websocket from "@fastify/websocket";
 import { asError } from "catch-unknown";
 import Fastify, { type FastifyInstance } from "fastify";
 import {
@@ -12,7 +13,8 @@ import {
 } from "fastify-type-provider-zod";
 import { z } from "zod/v4";
 
-import { DomainError, UnauthorizedError } from "./domain/errors";
+import { ConnectorHub } from "./connector/connector-hub";
+import { ConnectorUnauthorizedError, DomainError, UnauthorizedError } from "./domain/errors";
 import {
     AgentRecordSchema,
     CreateAgentSchema,
@@ -34,8 +36,8 @@ import {
 import {
     MemoryAuditSink,
     MemoryDesiredStatePublisher,
+    MemoryHermesProfileCatalog,
     MemoryRegistryRepository,
-    StaticHermesProfileCatalog,
 } from "./infrastructure/memory-adapters";
 import { AdminService } from "./services/admin-service";
 import { MemoryIdempotencyStore } from "./services/idempotency-store";
@@ -45,23 +47,30 @@ const HealthSchema = z.object({ status: z.enum(["ok", "not_ready"]) });
 export interface AppDependencies {
     service: AdminService;
     idempotency: MemoryIdempotencyStore;
+    connectorHub?: ConnectorHub;
 }
 
 export interface BuildAppOptions {
     adminToken: string;
+    connectorToken?: string;
     dependencies?: AppDependencies;
     logger?: boolean;
 }
 
-const defaultDependencies = (): AppDependencies => ({
-    service: new AdminService(
+const defaultDependencies = (): AppDependencies => {
+    const catalog = new MemoryHermesProfileCatalog();
+    const service = new AdminService(
         new MemoryRegistryRepository(),
         new MemoryAuditSink(),
         new MemoryDesiredStatePublisher(),
-        new StaticHermesProfileCatalog(),
-    ),
-    idempotency: new MemoryIdempotencyStore(),
-});
+        catalog,
+    );
+    return {
+        service,
+        idempotency: new MemoryIdempotencyStore(),
+        connectorHub: new ConnectorHub(service, catalog),
+    };
+};
 
 const secureTokenMatch = (authorization: string | undefined, expectedToken: string): boolean => {
     if (authorization === undefined || !authorization.startsWith("Bearer ")) {
@@ -104,6 +113,11 @@ export const buildApp = async (options: BuildAppOptions): Promise<FastifyInstanc
     });
     await app.register(swaggerUi, { routePrefix: "/documentation" });
 
+    if (options.connectorToken !== undefined && dependencies.connectorHub !== undefined) {
+        await app.register(websocket);
+        app.get("/connector/v1/ws", { websocket: true }, (socket) => dependencies.connectorHub?.attach(socket));
+    }
+
     app.addHook("onRequest", async (request) => {
         await Promise.resolve();
         if (
@@ -111,6 +125,13 @@ export const buildApp = async (options: BuildAppOptions): Promise<FastifyInstanc
             !secureTokenMatch(request.headers.authorization, options.adminToken)
         ) {
             throw new UnauthorizedError();
+        }
+        if (
+            request.url.startsWith("/connector/v1/") &&
+            (options.connectorToken === undefined ||
+                !secureTokenMatch(request.headers.authorization, options.connectorToken))
+        ) {
+            throw new ConnectorUnauthorizedError();
         }
     });
 

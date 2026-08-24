@@ -302,3 +302,25 @@ export class StaticHermesProfileCatalog implements HermesProfileCatalog {
         return Promise.resolve(this.profiles.map(clone));
     }
 }
+
+export class MemoryHermesProfileCatalog implements HermesProfileCatalog {
+    private readonly connectorProfiles = new Map<string, HermesProfileCatalogEntry[]>();
+
+    replace(connectorId: string, profiles: HermesProfileCatalogEntry[]): void {
+        this.connectorProfiles.set(connectorId, profiles.map(clone));
+    }
+
+    remove(connectorId: string): void {
+        const current = this.connectorProfiles.get(connectorId) ?? [];
+        this.connectorProfiles.set(
+            connectorId,
+            current.map((profile) => ({ ...profile, health: "offline", readiness: false, activeRuns: 0 })),
+        );
+    }
+
+    list(): Promise<HermesProfileCatalogEntry[]> {
+        const profiles = [...this.connectorProfiles.values()].flat();
+        const byId = new Map(profiles.map((profile) => [profile.id, profile]));
+        return Promise.resolve([...byId.values()].map(clone));
+    }
+}
