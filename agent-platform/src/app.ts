@@ -529,6 +529,11 @@ export const buildApp = async (options: BuildAppOptions): Promise<FastifyInstanc
         async () => dependencies.service.listHermesProfiles(),
     );
 
-    await app.ready();
+    // Do NOT call app.ready() here. The Fastify instance must remain mutable so
+    // callers (e.g. server.ts) can still register hooks such as onClose before
+    // the server starts. app.listen() (and app.inject() in tests) readies the
+    // instance internally. Calling ready() here made the instance "started",
+    // which caused a deterministic FST_ERR_INSTANCE_ALREADY_LISTENING when
+    // server.ts later added the runtime onClose hook.
     return app;
 };
