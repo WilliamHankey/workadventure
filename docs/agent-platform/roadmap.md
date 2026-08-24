@@ -35,7 +35,7 @@ Status: completed on 24 August 2026 ([issue #4](https://github.com/WilliamHankey
 
 ## Phase 3 — WorkAdventure presence and text
 
-Status: next.
+Status: completed on 24 August 2026 ([issue #5](https://github.com/WilliamHankey/workadventure/issues/5)).
 
 - Production agent OIDC identity
 - Woka presence and roster/spaces
@@ -43,6 +43,8 @@ Status: next.
 - Status and emote tools
 
 ## Phase 4 — Navigation and owner binding
+
+Status: next.
 
 - WAM/TMJ navigation graph
 - Collision-aware movement
