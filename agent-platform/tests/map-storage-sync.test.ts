@@ -9,6 +9,7 @@ interface ReceivedRequest {
     method: string;
     url: string;
     authorization: string | undefined;
+    contentType: string | undefined;
     body: string;
 }
 
@@ -24,6 +25,7 @@ describe("WorkAdventure Map Storage synchronization client", () => {
                     method: request.method ?? "",
                     url: request.url ?? "",
                     authorization: request.headers.authorization,
+                    contentType: request.headers["content-type"],
                     body,
                 });
                 response.statusCode = request.url?.includes("already-gone") === true ? 404 : 200;
@@ -63,6 +65,14 @@ describe("WorkAdventure Map Storage synchronization client", () => {
         await client.execute({
             operation: "put",
             payload: {
+                path: "agent-world/map.tmj",
+                contentType: "application/json",
+                contentBase64: Buffer.from('{"width":2}').toString("base64"),
+            },
+        });
+        await client.execute({
+            operation: "put",
+            payload: {
                 path: "agent-world/assets/hello world.txt",
                 contentType: "text/plain",
                 contentBase64: Buffer.from("hello").toString("base64"),
@@ -74,9 +84,15 @@ describe("WorkAdventure Map Storage synchronization client", () => {
         expect(received).toMatchObject([
             {
                 method: "PUT",
+                url: "/map-storage/agent-world/map.tmj",
+                authorization: "Basic dGVzdDpzZWNyZXQ=",
+                contentType: "application/json",
+                body: '{"width":2}',
+            },
+            {
+                method: "PUT",
                 url: "/map-storage/agent-world/assets/hello%20world.txt",
                 authorization: "Basic dGVzdDpzZWNyZXQ=",
-                body: "hello",
             },
             {
                 method: "POST",
@@ -89,7 +105,10 @@ describe("WorkAdventure Map Storage synchronization client", () => {
                 authorization: "Basic dGVzdDpzZWNyZXQ=",
             },
         ]);
-        expect(JSON.parse(received[1]?.body ?? "{}")).toEqual({
+        expect(received[1]?.contentType).toMatch(/^multipart\/form-data; boundary=/);
+        expect(received[1]?.body).toContain('name="file"; filename="hello world.txt"');
+        expect(received[1]?.body).toContain("hello");
+        expect(JSON.parse(received[2]?.body ?? "{}")).toEqual({
             source: "agent-world",
             destination: "agent-world-v2",
         });

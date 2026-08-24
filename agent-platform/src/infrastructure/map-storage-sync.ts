@@ -45,11 +45,22 @@ export class WorkAdventureMapStorageClient {
     async execute(event: MapStorageOperation): Promise<void> {
         if (event.operation === "put") {
             const payload = PutPayloadSchema.parse(event.payload);
-            await this.request(safePath(payload.path), {
-                method: "PUT",
-                headers: { "content-type": payload.contentType },
-                body: new Uint8Array(Buffer.from(payload.contentBase64, "base64")),
-            });
+            const bytes = new Uint8Array(Buffer.from(payload.contentBase64, "base64"));
+            if (payload.contentType === "application/json" || payload.contentType.endsWith("+json")) {
+                await this.request(safePath(payload.path), {
+                    method: "PUT",
+                    headers: { "content-type": payload.contentType },
+                    body: bytes,
+                });
+            } else {
+                const form = new FormData();
+                form.append(
+                    "file",
+                    new Blob([bytes], { type: payload.contentType }),
+                    payload.path.split("/").at(-1) ?? "asset",
+                );
+                await this.request(safePath(payload.path), { method: "PUT", body: form });
+            }
             return;
         }
         if (event.operation === "delete") {
