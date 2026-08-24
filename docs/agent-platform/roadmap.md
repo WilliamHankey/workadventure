@@ -86,7 +86,10 @@ Status: code-complete and CI-accepted on 24 August 2026; deployment remains disa
 
 ## Phase 9 — Production hardening
 
-Status: active ([issue #11](https://github.com/WilliamHankey/workadventure/issues/11)).
+Status: repository implementation completed and CI-accepted on 24 August 2026; external private-pilot gates remain open ([issue #11](https://github.com/WilliamHankey/workadventure/issues/11)).
 
 - Deployment, backups, monitoring, upgrades, incident recovery
-- Resource gates and private pilot
+- Persistent Postgres/Redis and ordered Map Storage synchronization
+- Strict Hermes Runs decision/action correlation
+- Resource gates and production image build
+- Private Lowcoder, OIDC, Hermes Desktop, WorkAdventure, voice/video, restore, and host-measurement pilot still required
