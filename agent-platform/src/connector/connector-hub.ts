@@ -58,7 +58,7 @@ const messageBase = (): { messageId: string; sentAt: string } => ({
     sentAt: new Date().toISOString(),
 });
 
-const toolsForAgent = (agent: AgentRecord): AgentToolName[] => {
+export const toolsForAgent = (agent: AgentRecord): AgentToolName[] => {
     const tools: AgentToolName[] = [];
     if (agent.permissions.tools) {
         tools.push("wa_get_self_state", "wa_get_nearby_users", "wa_get_world_context", "wa_get_map_areas");
@@ -67,7 +67,7 @@ const toolsForAgent = (agent: AgentRecord): AgentToolName[] => {
         tools.push("wa_move_to", "wa_move_to_area", "wa_approach_user", "wa_follow_user", "wa_stop_moving");
     }
     if (agent.permissions.speaking) {
-        tools.push("wa_say", "wa_direct_message", "wa_set_status", "wa_emote", "wa_speak");
+        tools.push("wa_say", "wa_set_status", "wa_emote", "wa_speak");
     }
     if (agent.permissions.listening || agent.permissions.speaking) {
         tools.push("wa_join_meeting", "wa_leave_meeting");

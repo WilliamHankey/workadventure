@@ -143,6 +143,19 @@ describe("Hermes Connector control-plane hub", () => {
         if (accepted.type !== "connector.accepted") {
             throw new Error("Expected connector.accepted");
         }
+        expect(accepted.bindings[0]?.allowedTools).not.toContain("wa_direct_message");
+        expect(accepted.bindings[0]?.allowedTools).toEqual(
+            expect.arrayContaining([
+                "wa_get_self_state",
+                "wa_get_nearby_users",
+                "wa_get_world_context",
+                "wa_get_map_areas",
+                "wa_move_to",
+                "wa_say",
+                "wa_join_meeting",
+                "wa_speak",
+            ]),
+        );
 
         const catalogResponse = await app.inject({
             method: "GET",
