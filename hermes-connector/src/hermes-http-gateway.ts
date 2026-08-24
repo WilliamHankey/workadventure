@@ -13,9 +13,13 @@ import type {
 const ModelsSchema = z.object({
     data: z.array(z.object({ id: z.string().min(1) })).min(1),
 });
+// The Hermes gateway's /v1/capabilities "features" map is mostly booleans, but
+// some keys (e.g. session_continuity_header, session_key_header) carry string
+// header names rather than booleans. Tolerate both shapes so a newer gateway
+// does not fail the probe; only boolean-true features are reported as enabled.
 const CapabilitiesSchema = z
     .object({
-        features: z.record(z.string(), z.boolean()).default({}),
+        features: z.record(z.string(), z.union([z.boolean(), z.string()])).default({}),
     })
     .passthrough();
 const DetailedHealthSchema = z
@@ -112,14 +116,16 @@ export class HermesHttpGateway implements HermesProfileGateway {
         const models = ModelsSchema.parse(modelsValue);
         const readiness =
             health.readiness?.ready ??
-            (health.readiness?.status === undefined ? health.status === "ok" : health.readiness.status === "ready");
+            (health.readiness?.status === undefined
+                ? health.status === "ok"
+                : health.readiness.status === "ready" || health.readiness.status === "ok");
 
         return {
             profileId: this.profile.profileId,
             displayName: this.profile.displayName,
             advertisedModel: models.data[0]?.id ?? this.profile.profileId,
             capabilities: Object.entries(capabilities.features)
-                .filter(([, enabled]) => enabled)
+                .filter(([, enabled]) => enabled === true)
                 .map(([name]) => name),
             health: health.status === "ok" && readiness ? "healthy" : "degraded",
             readiness,

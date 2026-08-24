@@ -133,7 +133,11 @@ export class HermesConnector {
         await this.refreshProfiles();
         this.transport.onOpen(async () => this.sendHello());
         this.transport.onMessage(async (value) => this.handleMessage(value));
-        await this.transport.connect();
+        // Do not let a transient connection failure (e.g. a 429 from the
+        // platform rate limiter during cold start) crash the connector. The
+        // transport's own reconnect logic handles retries; a rejected initial
+        // connect promise would otherwise terminate the process.
+        this.transport.connect().catch(() => undefined);
     }
 
     async stop(): Promise<void> {
