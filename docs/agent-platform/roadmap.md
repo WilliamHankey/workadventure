@@ -25,7 +25,7 @@ Status: completed on 24 August 2026 ([issue #3](https://github.com/WilliamHankey
 
 ## Phase 2 — Hermes Connector and agent driver loop
 
-Status: next.
+Status: completed on 24 August 2026 ([issue #4](https://github.com/WilliamHankey/workadventure/issues/4)).
 
 - Profile/model discovery
 - Outbound authenticated connector
@@ -34,6 +34,8 @@ Status: next.
 - Profile isolation and reconnect behavior
 
 ## Phase 3 — WorkAdventure presence and text
+
+Status: next.
 
 - Production agent OIDC identity
 - Woka presence and roster/spaces

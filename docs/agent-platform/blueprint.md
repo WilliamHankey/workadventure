@@ -1,6 +1,6 @@
 # WorkAdventure × Hermes Agent Platform Blueprint
 
-Status: approved; Phases 0 and 1 completed, with Phase 2 next.
+Status: approved; Phases 0–2 completed, with Phase 3 next.
 
 Prepared for: William Hankey  
 Date: 24 August 2026 (Africa/Johannesburg)
