@@ -1,8 +1,10 @@
 # Hermes Agent Platform roadmap
 
-This file remains the repository-local tracking baseline until the phase issues and milestones are created.
+This file is the repository-local phase ledger. GitHub issues hold the active checklists.
 
 ## Phase 0 — Repository and baseline safety
+
+Status: completed and accepted on 24 August 2026 ([issue #2](https://github.com/WilliamHankey/workadventure/issues/2)).
 
 - Clean fork and feature branch
 - PoC preservation
@@ -13,6 +15,8 @@ This file remains the repository-local tracking baseline until the phase issues 
 
 ## Phase 1 — Administration API and registry
 
+Status: completed on 24 August 2026 ([issue #3](https://github.com/WilliamHankey/workadventure/issues/3)).
+
 - Map CRUD
 - Agent CRUD
 - Supporting read-only catalogs
@@ -20,6 +24,8 @@ This file remains the repository-local tracking baseline until the phase issues 
 - Authentication, authorization, validation, idempotency, audit events
 
 ## Phase 2 — Hermes Connector and agent driver loop
+
+Status: next.
 
 - Profile/model discovery
 - Outbound authenticated connector

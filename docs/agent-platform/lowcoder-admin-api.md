@@ -1,6 +1,6 @@
 # Lowcoder administration API skeleton
 
-Status: Phase 0 contract. Implementation has not started.
+Status: Phase 1 contract implemented in `agent-platform/`; production adapters arrive in later phases.
 
 ## Boundary
 

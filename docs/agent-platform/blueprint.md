@@ -1,6 +1,6 @@
 # WorkAdventure × Hermes Agent Platform Blueprint
 
-Status: planning complete; implementation and GitHub mutations are intentionally paused pending approval.
+Status: approved; Phases 0 and 1 completed, with Phase 2 next.
 
 Prepared for: William Hankey  
 Date: 24 August 2026 (Africa/Johannesburg)

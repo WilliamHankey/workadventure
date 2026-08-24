@@ -20,7 +20,7 @@
 - [x] Do not delete, rename, archive, overwrite, or force-push the PoC.
 - [x] Do not merge the PoC root snapshot into the fork.
 - [x] Document the accepted Hermes-controlled architecture before implementation.
-- [ ] Port useful PoC components in small, reviewed commits only after Phase 0 closes.
+- [x] Begin implementation in small, reviewed commits only after Phase 0 closed.
 - [ ] Add a source-to-target inventory for each migrated module.
 - [ ] Add a regression test with each migrated behavior.
 - [ ] Remove Zackary/Wally hard-coding as code is migrated.
@@ -40,7 +40,7 @@
 Phase 1 must not start until:
 
 - [x] the map project exists and its baseline is recorded;
-- [ ] the baseline documentation is reviewed;
-- [ ] phase tracking issues and milestones are created;
+- [x] the baseline documentation is reviewed;
+- [x] phase tracking issues are created; milestones are deferred until release grouping is useful;
 - [x] the untouched upstream baseline smoke/build procedure is recorded or run in the connected Codex environment;
-- [ ] William explicitly accepts the Phase 0 checkpoint.
+- [x] William explicitly accepts the Phase 0 checkpoint.
