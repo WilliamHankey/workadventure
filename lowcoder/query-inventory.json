@@ -1,0 +1,138 @@
+{
+  "testedLowcoderVersion": "2.7.6",
+  "queries": [
+    {
+      "name": "healthLive",
+      "method": "GET",
+      "path": "/health/live",
+      "trigger": "onPageLoad",
+      "kind": "read"
+    },
+    {
+      "name": "healthReady",
+      "method": "GET",
+      "path": "/health/ready",
+      "trigger": "onPageLoad",
+      "kind": "read"
+    },
+    {
+      "name": "listMaps",
+      "method": "GET",
+      "path": "/api/v1/maps",
+      "trigger": "onPageLoad",
+      "kind": "read"
+    },
+    {
+      "name": "getMap",
+      "method": "GET",
+      "path": "/api/v1/maps/{id}",
+      "trigger": "manual",
+      "kind": "read"
+    },
+    {
+      "name": "createMap",
+      "method": "POST",
+      "path": "/api/v1/maps",
+      "trigger": "manual",
+      "kind": "mutation"
+    },
+    {
+      "name": "updateMap",
+      "method": "PATCH",
+      "path": "/api/v1/maps/{id}",
+      "trigger": "manual",
+      "kind": "mutation",
+      "versioned": true
+    },
+    {
+      "name": "deleteMap",
+      "method": "DELETE",
+      "path": "/api/v1/maps/{id}",
+      "trigger": "manual",
+      "kind": "mutation",
+      "versioned": true
+    },
+    {
+      "name": "getMapContent",
+      "method": "GET",
+      "path": "/api/v1/maps/{id}/content",
+      "trigger": "manual",
+      "kind": "read"
+    },
+    {
+      "name": "putMapContent",
+      "method": "PUT",
+      "path": "/api/v1/maps/{id}/content",
+      "trigger": "manual",
+      "kind": "mutation",
+      "versioned": true
+    },
+    {
+      "name": "listMapAssets",
+      "method": "GET",
+      "path": "/api/v1/maps/{id}/assets",
+      "trigger": "manual",
+      "kind": "read"
+    },
+    {
+      "name": "putMapAsset",
+      "method": "PUT",
+      "path": "/api/v1/maps/{id}/assets/{*}",
+      "trigger": "manual",
+      "kind": "mutation",
+      "versioned": true
+    },
+    {
+      "name": "deleteMapAsset",
+      "method": "DELETE",
+      "path": "/api/v1/maps/{id}/assets/{*}",
+      "trigger": "manual",
+      "kind": "mutation",
+      "versioned": true
+    },
+    {
+      "name": "listAgents",
+      "method": "GET",
+      "path": "/api/v1/agents",
+      "trigger": "onPageLoad",
+      "kind": "read"
+    },
+    {
+      "name": "getAgent",
+      "method": "GET",
+      "path": "/api/v1/agents/{id}",
+      "trigger": "manual",
+      "kind": "read"
+    },
+    {
+      "name": "createAgent",
+      "method": "POST",
+      "path": "/api/v1/agents",
+      "trigger": "manual",
+      "kind": "mutation"
+    },
+    {
+      "name": "updateAgent",
+      "method": "PATCH",
+      "path": "/api/v1/agents/{id}",
+      "trigger": "manual",
+      "kind": "mutation",
+      "versioned": true
+    },
+    {
+      "name": "deleteAgent",
+      "method": "DELETE",
+      "path": "/api/v1/agents/{id}",
+      "trigger": "manual",
+      "kind": "mutation",
+      "versioned": true
+    },
+    {
+      "name": "listHermesProfiles",
+      "method": "GET",
+      "path": "/api/v1/catalog/hermes-profiles",
+      "trigger": "onPageLoad",
+      "kind": "read"
+    }
+  ]
+}

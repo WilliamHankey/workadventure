@@ -8,6 +8,7 @@ on:
       - "libs/hermes-connector-protocol/**"
       - "libs/messages/**"
       - "messages/**"
+      - "lowcoder/**"
       - "play/src/pusher/**"
       - "play/tests/pusher/AgentIdentityController.test.ts"
       - "package-lock.json"
@@ -20,6 +21,7 @@ on:
       - "libs/hermes-connector-protocol/**"
       - "libs/messages/**"
       - "messages/**"
+      - "lowcoder/**"
       - "play/src/pusher/**"
       - "play/tests/pusher/AgentIdentityController.test.ts"
       - "package-lock.json"
@@ -51,5 +53,7 @@ jobs:
       - run: npm run typecheck --workspace=@workadventure/agent-platform
       - run: npm run lint --workspace=@workadventure/agent-platform
       - run: npm test --workspace=@workadventure/agent-platform -- --run
+      - run: node lowcoder/build-app.mjs --check
+      - run: node lowcoder/validate.mjs
       - run: npm exec --workspace=workadventure-play -- tsc --noEmit --project tsconfig-pusher.json
       - run: npm exec --workspace=workadventure-play -- vitest run tests/pusher/AgentIdentityController.test.ts
