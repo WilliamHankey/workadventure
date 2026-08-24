@@ -1,6 +1,6 @@
 # Hermes Agent Platform roadmap
 
-This file is the repository-local tracking baseline while GitHub Issues remain disabled on the fork.
+This file remains the repository-local tracking baseline until the phase issues and milestones are created.
 
 ## Phase 0 — Repository and baseline safety
 
