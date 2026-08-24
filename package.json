@@ -16,6 +16,7 @@
   "workspaces": [
     "play",
     "back",
+    "agent-platform",
     "map-storage",
     "libs/*",
     "benchmark",
