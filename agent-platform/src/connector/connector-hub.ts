@@ -29,6 +29,22 @@ interface ConnectionState {
 
 type AgentToolCall = Extract<ClientMessage, { type: "tool.call" }>;
 type ToolCallHandler = (message: AgentToolCall) => Promise<void>;
+type MediaClientMessage = Extract<ClientMessage, { type: "media.ready" | "media.transcript" | "media.stopped" }>;
+type MediaEventHandler = (message: MediaClientMessage) => Promise<void>;
+
+interface ActiveMediaSession {
+    lane: AgentLane;
+    mediaSessionId: string;
+    spaceName: string;
+    allowedParticipantIdentity: string;
+    allowedParticipantUuid: string;
+}
+
+interface PendingSpeech {
+    resolve: (message: Extract<ClientMessage, { type: "speech.result" }>) => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+}
 
 const messageBase = (): { messageId: string; sentAt: string } => ({
     messageId: randomUUID(),
@@ -77,6 +93,9 @@ export class ConnectorHub {
     readonly receivedMessages: ClientMessage[] = [];
     private readonly connections = new Map<string, ConnectionState>();
     private readonly toolCallHandlers = new Map<string, ToolCallHandler>();
+    private readonly mediaEventHandlers = new Map<string, MediaEventHandler>();
+    private readonly mediaSessions = new Map<string, ActiveMediaSession>();
+    private readonly pendingSpeech = new Map<string, PendingSpeech>();
 
     constructor(
         private readonly service: AdminService,
@@ -114,6 +133,105 @@ export class ConnectorHub {
                 this.toolCallHandlers.delete(agentId);
             }
         };
+    }
+
+    registerMediaEventHandler(agentId: string, handler: MediaEventHandler): () => void {
+        if (this.mediaEventHandlers.has(agentId)) {
+            throw new Error(`A media event handler is already registered for agent '${agentId}'`);
+        }
+        this.mediaEventHandlers.set(agentId, handler);
+        return () => {
+            if (this.mediaEventHandlers.get(agentId) === handler) {
+                this.mediaEventHandlers.delete(agentId);
+            }
+            this.mediaSessions.delete(agentId);
+        };
+    }
+
+    async sendMediaInvitation(
+        agentId: string,
+        sessionId: string,
+        invitation: Omit<
+            Extract<ServerMessage, { type: "media.invitation" }>,
+            keyof AgentLane | "type" | "messageId" | "sentAt" | "lane"
+        >,
+    ): Promise<void> {
+        const { connection, binding } = this.requireLocatedBinding(agentId);
+        const lane: AgentLane = {
+            agentId,
+            profileId: binding.profileId,
+            sessionId,
+            sessionEpoch: binding.sessionEpoch,
+        };
+        this.mediaSessions.set(agentId, {
+            lane,
+            mediaSessionId: invitation.mediaSessionId,
+            spaceName: invitation.spaceName,
+            allowedParticipantIdentity: invitation.allowedParticipantIdentity,
+            allowedParticipantUuid: invitation.allowedParticipantUuid,
+        });
+        await this.send(connection.socket, {
+            ...messageBase(),
+            type: "media.invitation",
+            lane,
+            ...invitation,
+        });
+    }
+
+    async stopMedia(agentId: string, reason: string): Promise<void> {
+        const active = this.mediaSessions.get(agentId);
+        if (active === undefined) {
+            return;
+        }
+        const connection = this.requireConnectionForLane(active.lane);
+        this.mediaSessions.delete(agentId);
+        await this.send(connection.socket, {
+            ...messageBase(),
+            type: "media.stop",
+            lane: active.lane,
+            mediaSessionId: active.mediaSessionId,
+            reason,
+        });
+    }
+
+    async publishSpeech(
+        agentId: string,
+        text: string,
+        voiceId: string | null,
+        timeoutMs = 30_000,
+    ): Promise<Extract<ClientMessage, { type: "speech.result" }>> {
+        const active = this.mediaSessions.get(agentId);
+        if (active === undefined) {
+            throw new Error("Agent does not have an active invitation-bound media session");
+        }
+        const connection = this.requireConnectionForLane(active.lane);
+        const speechId = randomUUID();
+        const result = new Promise<Extract<ClientMessage, { type: "speech.result" }>>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                this.pendingSpeech.delete(speechId);
+                reject(new Error("Timed out waiting for Hermes Desktop to publish speech"));
+            }, timeoutMs);
+            this.pendingSpeech.set(speechId, { resolve, reject, timeout });
+        });
+        try {
+            await this.send(connection.socket, {
+                ...messageBase(),
+                type: "speech.publish",
+                lane: active.lane,
+                mediaSessionId: active.mediaSessionId,
+                speechId,
+                text,
+                voiceId,
+            });
+            return await result;
+        } catch (error: unknown) {
+            const pending = this.pendingSpeech.get(speechId);
+            if (pending !== undefined) {
+                clearTimeout(pending.timeout);
+                this.pendingSpeech.delete(speechId);
+            }
+            throw error;
+        }
     }
 
     async dispatchWorldEvent(
@@ -186,6 +304,34 @@ export class ConnectorHub {
                 throw new Error(`No WorkAdventure runtime is registered for agent '${message.lane.agentId}'`);
             }
             await handler(message);
+        }
+        if (message.type === "media.ready" || message.type === "media.transcript" || message.type === "media.stopped") {
+            const active = this.requireActiveMedia(message.lane.agentId, message.mediaSessionId, message.lane);
+            if (
+                message.type === "media.transcript" &&
+                (message.sourceParticipantIdentity !== active.allowedParticipantIdentity ||
+                    message.sourceParticipantUuid !== active.allowedParticipantUuid)
+            ) {
+                throw new Error("Media transcript source is outside the server-side invitation binding");
+            }
+            const handler = this.mediaEventHandlers.get(message.lane.agentId);
+            if (handler === undefined) {
+                throw new Error(`No media event handler is registered for agent '${message.lane.agentId}'`);
+            }
+            await handler(message);
+            if (message.type === "media.stopped" && this.mediaSessions.get(message.lane.agentId) === active) {
+                this.mediaSessions.delete(message.lane.agentId);
+            }
+        }
+        if (message.type === "speech.result") {
+            this.requireActiveMedia(message.lane.agentId, message.mediaSessionId, message.lane);
+            const pending = this.pendingSpeech.get(message.speechId);
+            if (pending === undefined) {
+                throw new Error(`No pending speech matches '${message.speechId}'`);
+            }
+            clearTimeout(pending.timeout);
+            this.pendingSpeech.delete(message.speechId);
+            pending.resolve(message);
         }
         return connection.connectorId;
     }
@@ -278,6 +424,30 @@ export class ConnectorHub {
             throw new Error("No active connector matches the requested agent lane");
         }
         return connection;
+    }
+
+    private requireLocatedBinding(agentId: string): { connection: ConnectionState; binding: AgentBinding } {
+        for (const connection of this.connections.values()) {
+            const binding = connection.bindings.get(agentId);
+            if (binding !== undefined) {
+                return { connection, binding };
+            }
+        }
+        throw new Error(`No Hermes Connector lane is available for agent '${agentId}'`);
+    }
+
+    private requireActiveMedia(agentId: string, mediaSessionId: string, lane: AgentLane): ActiveMediaSession {
+        const active = this.mediaSessions.get(agentId);
+        if (
+            active === undefined ||
+            active.mediaSessionId !== mediaSessionId ||
+            active.lane.profileId !== lane.profileId ||
+            active.lane.sessionId !== lane.sessionId ||
+            active.lane.sessionEpoch !== lane.sessionEpoch
+        ) {
+            throw new Error("Media message does not match the active invitation-bound agent lane");
+        }
+        return active;
     }
 
     private async send(socket: WebSocket, message: ServerMessage): Promise<void> {

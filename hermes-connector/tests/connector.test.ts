@@ -14,6 +14,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { HermesConnector, stableHermesSessionKey } from "../src/connector";
 import type {
     ConnectorTransport,
+    HermesMediaAdapter,
+    HermesMediaSession,
+    HermesMediaSessionHandlers,
     HermesProfileDiscovery,
     HermesProfileGateway,
     HermesProfileGatewayFactory,
@@ -113,6 +116,31 @@ class FakeGatewayFactory implements HermesProfileGatewayFactory {
         const gateway = new FakeGateway(profile, this.toolName);
         this.gateways.set(profile.profileId, gateway);
         return gateway;
+    }
+}
+
+class FakeMediaAdapter implements HermesMediaAdapter {
+    handlers: HermesMediaSessionHandlers | undefined;
+    session: HermesMediaSession | undefined;
+    readonly spoken: Array<{ speechId: string; text: string; voiceId: string | null }> = [];
+
+    async start(
+        invitation: Extract<ServerMessage, { type: "media.invitation" }>,
+        handlers: HermesMediaSessionHandlers
+    ): Promise<HermesMediaSession> {
+        this.handlers = handlers;
+        const session: HermesMediaSession = {
+            lane: invitation.lane,
+            mediaSessionId: invitation.mediaSessionId,
+            speak: (speechId, text, voiceId) => {
+                this.spoken.push({ speechId, text, voiceId });
+                return Promise.resolve("published");
+            },
+            stop: async (reason) => handlers.stopped(reason),
+        };
+        this.session = session;
+        await handlers.ready();
+        return session;
     }
 }
 
@@ -265,6 +293,108 @@ describe("Hermes connector", () => {
         expect(first).toBe(second);
         expect(first).not.toBe(different);
         expect(first.length).toBeLessThanOrEqual(256);
+    });
+
+    it("keeps LiveKit transcription and speech inside the invitation-bound agent lane", async () => {
+        const transport = new MemoryTransport();
+        const mediaAdapter = new FakeMediaAdapter();
+        const connector = new HermesConnector(
+            new StaticDiscovery([
+                {
+                    profileId: "researcher",
+                    displayName: "Researcher",
+                    baseUrl: "http://127.0.0.1:8643",
+                    apiKey: "local-only",
+                },
+            ]),
+            new FakeGatewayFactory(),
+            transport,
+            { connectorId: "desktop-voice", instanceId: "instance-voice", mediaAdapter }
+        );
+
+        await connector.start();
+        await transport.deliver(acceptedMessage(["wa_join_meeting", "wa_leave_meeting", "wa_speak"]));
+        await transport.deliver({
+            ...base,
+            type: "media.invitation",
+            lane,
+            mediaSessionId: "media-session-1",
+            spaceName: "meeting-space",
+            serverUrl: "wss://livekit.example",
+            token: "livekit-token-never-sent-to-hermes-model",
+            allowedParticipantIdentity: "human-space-1",
+            allowedParticipantUuid: "owner-1",
+            voiceId: "voice-1",
+            policy: {
+                vadThreshold: 0.55,
+                silenceMs: 650,
+                maxUtteranceMs: 30_000,
+                transcriptRetention: "audit_metadata",
+                bargeIn: true,
+            },
+        });
+        await mediaAdapter.handlers?.transcript({
+            utteranceId: "utterance-1",
+            sourceParticipantIdentity: "human-space-1",
+            sourceParticipantUuid: "owner-1",
+            text: "Can you hear me?",
+            language: "en-ZA",
+            startedAt: new Date().toISOString(),
+            endedAt: new Date().toISOString(),
+        });
+        await expect(
+            mediaAdapter.handlers?.transcript({
+                utteranceId: "utterance-attacker",
+                sourceParticipantIdentity: "other-space-user",
+                sourceParticipantUuid: "other-user",
+                text: "Cross-session injection",
+                language: null,
+                startedAt: new Date().toISOString(),
+                endedAt: new Date().toISOString(),
+            })
+        ).rejects.toThrow(/outside the invitation participant binding/);
+        await transport.deliver({
+            ...base,
+            type: "speech.publish",
+            lane,
+            mediaSessionId: "media-session-1",
+            speechId: "speech-1",
+            text: "Yes, I can hear you.",
+            voiceId: "voice-1",
+        });
+        await transport.deliver({
+            ...base,
+            type: "media.stop",
+            lane,
+            mediaSessionId: "media-session-1",
+            reason: "left_by_hermes",
+        });
+        await connector.stop();
+
+        const messages = transport.sent.map((message) => ClientMessageSchema.parse(message));
+        expect(messages.map((message) => message.type)).toContain("media.ready");
+        expect(messages).toContainEqual(
+            expect.objectContaining({
+                type: "media.transcript",
+                lane,
+                mediaSessionId: "media-session-1",
+                sourceParticipantUuid: "owner-1",
+                text: "Can you hear me?",
+            })
+        );
+        expect(messages).toContainEqual(
+            expect.objectContaining({
+                type: "speech.result",
+                lane,
+                mediaSessionId: "media-session-1",
+                speechId: "speech-1",
+                outcome: "published",
+            })
+        );
+        expect(mediaAdapter.spoken).toEqual([
+            { speechId: "speech-1", text: "Yes, I can hear you.", voiceId: "voice-1" },
+        ]);
+        expect(JSON.stringify(messages)).not.toContain("livekit-token-never-sent-to-hermes-model");
     });
 
     it("discovers local profiles without placing their keys in safe metadata", async () => {

@@ -66,8 +66,10 @@ export const WorldEventSchema = z.object({
         "nearby_message",
         "proximity_joined",
         "proximity_left",
+        "meeting_invitation",
         "meeting_joined",
         "meeting_left",
+        "voice_transcript",
         "navigation_completed",
         "navigation_failed",
         "navigation_cancelled",
@@ -130,6 +132,42 @@ export const RunFailedSchema = MessageBaseSchema.extend({
     errorCode: z.string().min(1).max(128),
 });
 
+export const MediaReadySchema = MessageBaseSchema.extend({
+    type: z.literal("media.ready"),
+    lane: AgentLaneSchema,
+    mediaSessionId: IdSchema,
+    spaceName: z.string().min(1).max(512),
+});
+
+export const MediaTranscriptSchema = MessageBaseSchema.extend({
+    type: z.literal("media.transcript"),
+    lane: AgentLaneSchema,
+    mediaSessionId: IdSchema,
+    utteranceId: IdSchema,
+    sourceParticipantIdentity: IdSchema,
+    sourceParticipantUuid: IdSchema,
+    text: z.string().min(1).max(8_000),
+    language: z.string().min(2).max(32).nullable(),
+    startedAt: TimestampSchema,
+    endedAt: TimestampSchema,
+});
+
+export const MediaStoppedSchema = MessageBaseSchema.extend({
+    type: z.literal("media.stopped"),
+    lane: AgentLaneSchema,
+    mediaSessionId: IdSchema,
+    reason: z.string().min(1).max(255),
+});
+
+export const SpeechResultSchema = MessageBaseSchema.extend({
+    type: z.literal("speech.result"),
+    lane: AgentLaneSchema,
+    mediaSessionId: IdSchema,
+    speechId: IdSchema,
+    outcome: z.enum(["published", "interrupted", "failed"]),
+    reason: z.string().min(1).max(255).nullable(),
+});
+
 export const ClientMessageSchema = z.discriminatedUnion("type", [
     ConnectorHelloSchema,
     ConnectorHeartbeatSchema,
@@ -138,6 +176,10 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     AgentToolCallSchema,
     RunCompletedSchema,
     RunFailedSchema,
+    MediaReadySchema,
+    MediaTranscriptSchema,
+    MediaStoppedSchema,
+    SpeechResultSchema,
 ]);
 
 export const ConnectorAcceptedSchema = MessageBaseSchema.extend({
@@ -172,11 +214,49 @@ export const ToolResultSchema = MessageBaseSchema.extend({
     result: z.record(z.string(), z.unknown()),
 });
 
+export const MediaInvitationSchema = MessageBaseSchema.extend({
+    type: z.literal("media.invitation"),
+    lane: AgentLaneSchema,
+    mediaSessionId: IdSchema,
+    spaceName: z.string().min(1).max(512),
+    serverUrl: z.url(),
+    token: z.string().min(1).max(16_000),
+    allowedParticipantIdentity: IdSchema,
+    allowedParticipantUuid: IdSchema,
+    voiceId: z.string().min(1).max(255).nullable(),
+    policy: z.object({
+        vadThreshold: z.number().min(0).max(1),
+        silenceMs: z.number().int().min(100).max(10_000),
+        maxUtteranceMs: z.number().int().min(500).max(120_000),
+        transcriptRetention: z.enum(["none", "audit_metadata", "full"]),
+        bargeIn: z.boolean(),
+    }),
+});
+
+export const MediaStopSchema = MessageBaseSchema.extend({
+    type: z.literal("media.stop"),
+    lane: AgentLaneSchema,
+    mediaSessionId: IdSchema,
+    reason: z.string().min(1).max(255),
+});
+
+export const SpeechPublishSchema = MessageBaseSchema.extend({
+    type: z.literal("speech.publish"),
+    lane: AgentLaneSchema,
+    mediaSessionId: IdSchema,
+    speechId: IdSchema,
+    text: z.string().min(1).max(8_000),
+    voiceId: z.string().min(1).max(255).nullable(),
+});
+
 export const ServerMessageSchema = z.discriminatedUnion("type", [
     ConnectorAcceptedSchema,
     WorldEventDispatchSchema,
     RunCancelSchema,
     ToolResultSchema,
+    MediaInvitationSchema,
+    MediaStopSchema,
+    SpeechPublishSchema,
 ]);
 
 export type AgentToolName = z.infer<typeof AgentToolNameSchema>;

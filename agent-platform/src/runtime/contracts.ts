@@ -29,12 +29,32 @@ export interface NearbyUser {
     availabilityStatus: AvailabilityStatus;
 }
 
+export interface AgentMediaInvitation {
+    mediaSessionId: string;
+    spaceName: string;
+    serverUrl: string;
+    token: string;
+    allowedParticipantIdentity: string;
+    allowedParticipantUuid: string;
+}
+
+export type AgentMediaInvitationHandler = (invitation: AgentMediaInvitation) => Promise<void>;
+
 export type AgentWorldEvent =
     | { type: "user.joined"; user: NearbyUser }
     | { type: "user.left"; user: NearbyUser }
     | { type: "user.moved"; user: NearbyUser }
     | { type: "user.said"; user: NearbyUser; text: string }
     | { type: "user.emoted"; user: NearbyUser; emote: string }
+    | {
+          type: "meeting.invitation";
+          senderUserUuid: string;
+          senderUserId: number | null;
+          senderName: string;
+          senderPlayUri: string;
+      }
+    | { type: "meeting.joined"; spaceName: string; inviterUuid: string }
+    | { type: "meeting.left"; spaceName: string; reason: string }
     | { type: "room.joined"; userId: number }
     | {
           type: "navigation.completed" | "navigation.failed" | "navigation.cancelled";

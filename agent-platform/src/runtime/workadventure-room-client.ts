@@ -1,18 +1,27 @@
+import { randomUUID } from "node:crypto";
+
 import {
+    AskPositionMessage_AskType,
     AvailabilityStatus,
+    FilterType,
     apiVersionHash,
     FrontToPusherWebSocketMessage,
     PositionMessage_Direction,
     PusherToFrontWebSocketMessage,
     SayMessageType,
     SetPlayerDetailsMessage,
+    SpaceUser,
+    type AnswerMessage,
     type ClientToServerMessage,
+    type PrivateEventPusherToFront,
+    type QueryMessage,
     type ServerToClientMessage,
     type SubMessage,
     type UserJoinedMessage,
 } from "@workadventure/messages";
 
 import type {
+    AgentMediaInvitationHandler,
     AgentWorldEventHandler,
     NearbyUser,
     RoomSocket,
@@ -35,6 +44,8 @@ export interface WorkAdventureRoomClientOptions {
     ownerWorkAdventureUuid: string;
     navigationGraph?: NavigationGraph;
     onEvent: AgentWorldEventHandler;
+    onMediaInvitation?: AgentMediaInvitationHandler;
+    onMediaStop?: (mediaSessionId: string, reason: string) => Promise<void>;
     socketFactory?: RoomSocketFactory;
     reconnectDelayMs?: number;
     movementStepMs?: number;
@@ -77,6 +88,27 @@ interface FollowTarget {
     distance: number;
 }
 
+interface PendingMeetingInvitation {
+    senderUserUuid: string;
+    senderUserId: number | null;
+    senderName: string;
+    senderPlayUri: string;
+    receivedAt: number;
+}
+
+interface ActiveMeeting {
+    spaceName: string;
+    spaceUserId: string;
+    inviterUuid: string;
+    mediaSessionId?: string;
+}
+
+interface PendingQuery {
+    resolve: (answer: NonNullable<AnswerMessage["answer"]>) => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+}
+
 export class WorkAdventureRoomClient {
     private readonly users = new Map<number, NearbyUser>();
     private readonly outgoingFrames = new Map<number, StoredFrame>();
@@ -93,6 +125,11 @@ export class WorkAdventureRoomClient {
     private activeMovement: ActiveMovement | undefined;
     private followTarget: FollowTarget | undefined;
     private followRevision = 0;
+    private pendingMeetingInvitation: PendingMeetingInvitation | undefined;
+    private activeMeeting: ActiveMeeting | undefined;
+    private readonly spaceUsers = new Map<string, Map<string, SpaceUser>>();
+    private readonly pendingQueries = new Map<number, PendingQuery>();
+    private nextQueryId = 1;
 
     public constructor(private readonly options: WorkAdventureRoomClientOptions) {
         this.socketFactory = options.socketFactory ?? createWsRoomSocket;
@@ -114,6 +151,12 @@ export class WorkAdventureRoomClient {
         }
         this.socket?.close(1000, "Hermes agent runtime stopped");
         this.socket = undefined;
+        this.rejectPendingQueries(new Error("WorkAdventure room client stopped"));
+        const meeting = this.activeMeeting;
+        this.activeMeeting = undefined;
+        if (meeting?.mediaSessionId !== undefined) {
+            this.options.onMediaStop?.(meeting.mediaSessionId, "runtime_stopped").catch(() => undefined);
+        }
     }
 
     say(text: string): void {
@@ -140,6 +183,79 @@ export class WorkAdventureRoomClient {
 
     emote(emote: string): void {
         this.send({ message: { $case: "emotePromptMessage", emotePromptMessage: { emote } } });
+    }
+
+    respondToMeetingInvitation(senderUserUuid: string, accept: boolean): void {
+        const invitation = this.pendingMeetingInvitation;
+        if (
+            invitation === undefined ||
+            invitation.senderUserUuid !== senderUserUuid ||
+            Date.now() - invitation.receivedAt > 10 * 60_000
+        ) {
+            throw new Error("No current meeting invitation matches this sender");
+        }
+        this.send({
+            message: {
+                $case: "meetingInvitationResponseMessage",
+                meetingInvitationResponseMessage: { accept, requestSenderUserUuid: senderUserUuid },
+            },
+        });
+        this.pendingMeetingInvitation = undefined;
+        if (!accept) {
+            return;
+        }
+        this.send({
+            message: {
+                $case: "askPositionMessage",
+                askPositionMessage: {
+                    userIdentifier: invitation.senderUserUuid,
+                    playUri: invitation.senderPlayUri,
+                    askType: AskPositionMessage_AskType.MOVE,
+                    userId: invitation.senderUserId ?? undefined,
+                },
+            },
+        });
+        this.activeMeeting = { spaceName: "pending", spaceUserId: "pending", inviterUuid: senderUserUuid };
+    }
+
+    async leaveMeeting(reason = "left_by_hermes"): Promise<void> {
+        const meeting = this.activeMeeting;
+        if (meeting === undefined) {
+            return;
+        }
+        this.activeMeeting = undefined;
+        if (meeting.spaceName !== "pending") {
+            await this.query({
+                $case: "leaveSpaceQuery",
+                leaveSpaceQuery: { spaceName: meeting.spaceName },
+            });
+            this.spaceUsers.delete(meeting.spaceName);
+            this.emit({ type: "meeting.left", spaceName: meeting.spaceName, reason });
+        }
+        if (meeting.mediaSessionId !== undefined) {
+            await this.options.onMediaStop?.(meeting.mediaSessionId, reason);
+        }
+    }
+
+    setVoiceIndicator(enabled: boolean): void {
+        const meeting = this.activeMeeting;
+        if (meeting === undefined || meeting.spaceName === "pending") {
+            return;
+        }
+        this.send({
+            message: {
+                $case: "updateSpaceUserMessage",
+                updateSpaceUserMessage: {
+                    spaceName: meeting.spaceName,
+                    user: SpaceUser.fromPartial({
+                        spaceUserId: meeting.spaceUserId,
+                        microphoneState: enabled,
+                        showVoiceIndicator: enabled,
+                    }),
+                    updateMask: ["microphoneState", "showVoiceIndicator"],
+                },
+            },
+        });
     }
 
     moveTo(x: number, y: number, actionId: string): Promise<NavigationOutcome> {
@@ -269,6 +385,7 @@ export class WorkAdventureRoomClient {
 
     private handleClose(code: number, reason: string): void {
         this.socket = undefined;
+        this.rejectPendingQueries(new Error(reason || `socket_closed_${String(code)}`));
         if (this.manuallyClosed || code === 1000 || code === 1008) {
             return;
         }
@@ -309,6 +426,46 @@ export class WorkAdventureRoomClient {
         if (inner.$case === "batchMessage") {
             for (const subMessage of inner.batchMessage.payload) {
                 this.handleSubMessage(subMessage);
+            }
+            return;
+        }
+        if (inner.$case === "answerMessage") {
+            this.handleAnswer(inner.answerMessage);
+            return;
+        }
+        if (inner.$case === "meetingInvitationRequestReceivedMessage") {
+            const invitation = inner.meetingInvitationRequestReceivedMessage;
+            this.pendingMeetingInvitation = {
+                senderUserUuid: invitation.senderUserUuid,
+                senderUserId: invitation.senderUserId ?? null,
+                senderName: invitation.senderName,
+                senderPlayUri: invitation.senderPlayUri,
+                receivedAt: Date.now(),
+            };
+            this.emit({
+                type: "meeting.invitation",
+                senderUserUuid: invitation.senderUserUuid,
+                senderUserId: invitation.senderUserId ?? null,
+                senderName: invitation.senderName,
+                senderPlayUri: invitation.senderPlayUri,
+            });
+            return;
+        }
+        if (inner.$case === "joinSpaceRequestMessage") {
+            this.handleJoinSpaceRequest(
+                inner.joinSpaceRequestMessage.spaceName,
+                inner.joinSpaceRequestMessage.propertiesToSync,
+            );
+            return;
+        }
+        if (inner.$case === "leaveSpaceRequestMessage") {
+            if (this.activeMeeting?.spaceName === inner.leaveSpaceRequestMessage.spaceName) {
+                this.leaveMeeting("workadventure_requested_leave").catch((error: unknown) =>
+                    this.emit({
+                        type: "connection.degraded",
+                        reason: error instanceof Error ? error.message : "meeting_leave_failed",
+                    }),
+                );
             }
             return;
         }
@@ -381,6 +538,38 @@ export class WorkAdventureRoomClient {
                 }
                 break;
             }
+            case "initSpaceUsersMessage": {
+                this.spaceUsers.set(
+                    message.initSpaceUsersMessage.spaceName,
+                    new Map(
+                        message.initSpaceUsersMessage.users.map((user) => [user.uuid, SpaceUser.fromPartial(user)]),
+                    ),
+                );
+                break;
+            }
+            case "addSpaceUserMessage": {
+                const user = message.addSpaceUserMessage.user;
+                if (user !== undefined) {
+                    const users =
+                        this.spaceUsers.get(message.addSpaceUserMessage.spaceName) ?? new Map<string, SpaceUser>();
+                    users.set(user.uuid, SpaceUser.fromPartial(user));
+                    this.spaceUsers.set(message.addSpaceUserMessage.spaceName, users);
+                }
+                break;
+            }
+            case "removeSpaceUserMessage": {
+                const users = this.spaceUsers.get(message.removeSpaceUserMessage.spaceName);
+                if (users !== undefined) {
+                    for (const [uuid, user] of users.entries()) {
+                        if (user.spaceUserId === message.removeSpaceUserMessage.spaceUserId) users.delete(uuid);
+                    }
+                }
+                break;
+            }
+            case "privateEvent": {
+                this.handlePrivateSpaceEvent(message.privateEvent);
+                break;
+            }
             default: {
                 break;
             }
@@ -404,6 +593,121 @@ export class WorkAdventureRoomClient {
             moving: position.moving,
             availabilityStatus: message.availabilityStatus,
         };
+    }
+
+    private handleAnswer(message: AnswerMessage): void {
+        const pending = this.pendingQueries.get(message.id);
+        if (pending === undefined) {
+            return;
+        }
+        clearTimeout(pending.timeout);
+        this.pendingQueries.delete(message.id);
+        if (message.answer === undefined) {
+            pending.reject(new Error("WorkAdventure query answer was empty"));
+        } else if (message.answer.$case === "error") {
+            pending.reject(new Error(message.answer.error.message));
+        } else {
+            pending.resolve(message.answer);
+        }
+    }
+
+    private handleJoinSpaceRequest(spaceName: string, propertiesToSync: string[]): void {
+        const consent = this.activeMeeting;
+        if (consent === undefined || consent.spaceName !== "pending") {
+            return;
+        }
+        this.query({
+            $case: "joinSpaceQuery",
+            joinSpaceQuery: { spaceName, propertiesToSync, filterType: FilterType.ALL_USERS },
+        })
+            .then((answer) => {
+                if (answer.$case !== "joinSpaceAnswer") {
+                    throw new Error("WorkAdventure returned an unexpected join-space answer");
+                }
+                this.activeMeeting = {
+                    spaceName,
+                    spaceUserId: answer.joinSpaceAnswer.spaceUserId,
+                    inviterUuid: consent.inviterUuid,
+                };
+                this.emit({ type: "meeting.joined", spaceName, inviterUuid: consent.inviterUuid });
+            })
+            .catch((error: unknown) =>
+                this.emit({
+                    type: "connection.degraded",
+                    reason: error instanceof Error ? error.message : "meeting_join_failed",
+                }),
+            );
+    }
+
+    private handlePrivateSpaceEvent(message: PrivateEventPusherToFront): void {
+        const meeting = this.activeMeeting;
+        if (
+            meeting === undefined ||
+            message.spaceName !== meeting.spaceName ||
+            message.receiverUserId !== meeting.spaceUserId
+        ) {
+            return;
+        }
+        const event = message.spaceEvent?.event;
+        if (event?.$case === "livekitDisconnectMessage") {
+            const mediaSessionId = meeting.mediaSessionId;
+            meeting.mediaSessionId = undefined;
+            if (mediaSessionId !== undefined) {
+                this.options.onMediaStop?.(mediaSessionId, "workadventure_livekit_disconnect").catch(() => undefined);
+            }
+            this.setVoiceIndicator(false);
+            return;
+        }
+        if (event?.$case !== "livekitInvitationMessage" || event.livekitInvitationMessage === undefined) {
+            return;
+        }
+        const allowedParticipant = this.spaceUsers.get(meeting.spaceName)?.get(meeting.inviterUuid);
+        if (allowedParticipant === undefined) {
+            this.emit({ type: "connection.degraded", reason: "inviting_participant_is_not_in_the_joined_space" });
+            return;
+        }
+        const mediaSessionId = `media-${randomUUID()}`;
+        meeting.mediaSessionId = mediaSessionId;
+        this.options
+            .onMediaInvitation?.({
+                mediaSessionId,
+                spaceName: meeting.spaceName,
+                serverUrl: event.livekitInvitationMessage.serverUrl,
+                token: event.livekitInvitationMessage.token,
+                allowedParticipantIdentity: allowedParticipant.spaceUserId,
+                allowedParticipantUuid: allowedParticipant.uuid,
+            })
+            .catch((error: unknown) =>
+                this.emit({
+                    type: "connection.degraded",
+                    reason: error instanceof Error ? error.message : "media_invitation_dispatch_failed",
+                }),
+            );
+    }
+
+    private query(
+        query: NonNullable<QueryMessage["query"]>,
+        timeoutMs = 15_000,
+    ): Promise<NonNullable<AnswerMessage["answer"]>> {
+        const id = this.nextQueryId;
+        this.nextQueryId += 1;
+        const result = new Promise<NonNullable<AnswerMessage["answer"]>>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                this.pendingQueries.delete(id);
+                reject(new Error("WorkAdventure query timed out"));
+            }, timeoutMs);
+            this.pendingQueries.set(id, { resolve, reject, timeout });
+        });
+        this.send({ message: { $case: "queryMessage", queryMessage: { id, query } } });
+        return result;
+    }
+
+    private rejectPendingQueries(error: Error): void {
+        for (const pending of this.pendingQueries.values()) {
+            clearTimeout(pending.timeout);
+            pending.reject(error);
+        }
+        this.pendingQueries.clear();
     }
 
     private requireNavigationGraph(): NavigationGraph {

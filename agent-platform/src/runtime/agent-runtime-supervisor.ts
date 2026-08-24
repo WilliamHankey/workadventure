@@ -16,6 +16,7 @@ import {
 } from "./workadventure-room-client";
 
 type AgentToolCall = Extract<ClientMessage, { type: "tool.call" }>;
+type AgentMediaMessage = Extract<ClientMessage, { type: "media.ready" | "media.transcript" | "media.stopped" }>;
 
 interface AgentRoomClient {
     start(): void;
@@ -23,6 +24,9 @@ interface AgentRoomClient {
     say(text: string): void;
     setStatus(status: AgentAvailabilityName): void;
     emote(emote: string): void;
+    respondToMeetingInvitation(senderUserUuid: string, accept: boolean): void;
+    leaveMeeting(reason?: string): Promise<void>;
+    setVoiceIndicator(enabled: boolean): void;
     moveTo(x: number, y: number, actionId: string): Promise<NavigationOutcome>;
     moveToArea(areaName: string, actionId: string): Promise<NavigationOutcome>;
     approachUser(userUuid: string, distance: number, actionId: string): Promise<NavigationOutcome>;
@@ -41,6 +45,7 @@ interface ActiveAgent {
     map: MapRecord;
     client: AgentRoomClient;
     unregisterToolHandler: () => void;
+    unregisterMediaHandler: () => void;
 }
 
 export interface AgentRuntimeSupervisorOptions {
@@ -65,6 +70,12 @@ const UserMovementArgumentsSchema = z.object({
     distance: z.number().finite().min(16).max(512).default(64),
 });
 const StopArgumentsSchema = z.object({}).passthrough();
+const JoinMeetingArgumentsSchema = z.object({
+    requestSenderUserUuid: z.string().min(1).max(255),
+    accept: z.boolean().default(true),
+});
+const LeaveMeetingArgumentsSchema = z.object({}).passthrough();
+const SpeakArgumentsSchema = z.object({ text: z.string().min(1).max(8_000) });
 
 const stableId = (prefix: string, ...parts: string[]): string =>
     `${prefix}-${createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 32)}`;
@@ -101,6 +112,8 @@ export class AgentRuntimeSupervisor {
         }
         for (const active of this.activeAgents.values()) {
             active.unregisterToolHandler();
+            active.unregisterMediaHandler();
+            this.connectorHub.stopMedia(active.agent.id, "runtime_stopped").catch(() => undefined);
             active.client.stop();
         }
         this.activeAgents.clear();
@@ -114,6 +127,8 @@ export class AgentRuntimeSupervisor {
         for (const [agentId, active] of this.activeAgents.entries()) {
             if (!desiredIds.has(agentId)) {
                 active.unregisterToolHandler();
+                active.unregisterMediaHandler();
+                this.connectorHub.stopMedia(agentId, "agent_disabled").catch(() => undefined);
                 active.client.stop();
                 this.activeAgents.delete(agentId);
             }
@@ -141,6 +156,8 @@ export class AgentRuntimeSupervisor {
         const existing = this.activeAgents.get(agent.id);
         if (existing !== undefined) {
             existing.unregisterToolHandler();
+            existing.unregisterMediaHandler();
+            await this.connectorHub.stopMedia(agent.id, "agent_definition_replaced");
             existing.client.stop();
             this.activeAgents.delete(agent.id);
         }
@@ -176,12 +193,39 @@ export class AgentRuntimeSupervisor {
                 ownerWorkAdventureUuid: agent.ownerWorkAdventureUuid,
                 navigationGraph,
                 onEvent: (event) => this.handleWorldEvent(agent, event),
+                onMediaInvitation: async (invitation) =>
+                    this.connectorHub.sendMediaInvitation(
+                        agent.id,
+                        stableId("wa-media-session", agent.id, invitation.mediaSessionId),
+                        {
+                            ...invitation,
+                            voiceId: agent.voiceId,
+                            policy: {
+                                vadThreshold: 0.55,
+                                silenceMs: 650,
+                                maxUtteranceMs: 30_000,
+                                transcriptRetention: "audit_metadata",
+                                bargeIn: true,
+                            },
+                        },
+                    ),
+                onMediaStop: async (_mediaSessionId, reason) => this.connectorHub.stopMedia(agent.id, reason),
                 socketFactory: this.options.socketFactory,
             });
             const unregisterToolHandler = this.connectorHub.registerToolCallHandler(agent.id, (message) =>
                 this.handleToolCall(agent, map, client, message),
             );
-            this.activeAgents.set(agent.id, { revision, agent, map, client, unregisterToolHandler });
+            const unregisterMediaHandler = this.connectorHub.registerMediaEventHandler(agent.id, (message) =>
+                this.handleMediaEvent(agent, client, message),
+            );
+            this.activeAgents.set(agent.id, {
+                revision,
+                agent,
+                map,
+                client,
+                unregisterToolHandler,
+                unregisterMediaHandler,
+            });
             client.start();
         } catch (error: unknown) {
             this.reportError(agent.id, normalizeError(error));
@@ -209,6 +253,40 @@ export class AgentRuntimeSupervisor {
                         target: event.target,
                         ...(event.reason === undefined ? {} : { reason: event.reason }),
                     },
+                },
+                agent.behaviorInstructions,
+            );
+            return;
+        }
+        if (event.type === "meeting.invitation") {
+            await this.connectorHub.dispatchWorldEvent(
+                agent.id,
+                stableId("wa-session", agent.id, event.senderUserUuid),
+                {
+                    kind: "meeting_invitation",
+                    occurredAt: new Date().toISOString(),
+                    conversationId: stableId("wa-conversation", agent.id, event.senderUserUuid),
+                    payload: {
+                        senderUserUuid: event.senderUserUuid,
+                        senderUserId: event.senderUserId,
+                        senderName: event.senderName,
+                        senderPlayUri: event.senderPlayUri,
+                        owner: event.senderUserUuid === agent.ownerWorkAdventureUuid,
+                    },
+                },
+                agent.behaviorInstructions,
+            );
+            return;
+        }
+        if (event.type === "meeting.joined" || event.type === "meeting.left") {
+            await this.connectorHub.dispatchWorldEvent(
+                agent.id,
+                stableId("wa-session", agent.id, event.spaceName),
+                {
+                    kind: event.type === "meeting.joined" ? "meeting_joined" : "meeting_left",
+                    occurredAt: new Date().toISOString(),
+                    conversationId: stableId("wa-conversation", agent.id, event.spaceName),
+                    payload: event,
                 },
                 agent.behaviorInstructions,
             );
@@ -252,6 +330,42 @@ export class AgentRuntimeSupervisor {
                     userUuid: event.user.userUuid,
                     name: event.user.name,
                     owner: event.user.userUuid === agent.ownerWorkAdventureUuid,
+                },
+            },
+            agent.behaviorInstructions,
+        );
+    }
+
+    private async handleMediaEvent(
+        agent: AgentRecord,
+        client: AgentRoomClient,
+        message: AgentMediaMessage,
+    ): Promise<void> {
+        if (message.type === "media.ready") {
+            client.setVoiceIndicator(true);
+            return;
+        }
+        if (message.type === "media.stopped") {
+            client.setVoiceIndicator(false);
+            return;
+        }
+        await this.connectorHub.dispatchWorldEvent(
+            agent.id,
+            message.lane.sessionId,
+            {
+                kind: "voice_transcript",
+                occurredAt: message.endedAt,
+                conversationId: stableId("wa-voice-conversation", agent.id, message.mediaSessionId),
+                payload: {
+                    mediaSessionId: message.mediaSessionId,
+                    utteranceId: message.utteranceId,
+                    sourceParticipantIdentity: message.sourceParticipantIdentity,
+                    sourceParticipantUuid: message.sourceParticipantUuid,
+                    owner: message.sourceParticipantUuid === agent.ownerWorkAdventureUuid,
+                    text: message.text,
+                    language: message.language,
+                    startedAt: message.startedAt,
+                    endedAt: message.endedAt,
                 },
             },
             agent.behaviorInstructions,
@@ -342,6 +456,39 @@ export class AgentRuntimeSupervisor {
                 case "wa_stop_moving": {
                     StopArgumentsSchema.parse(message.arguments);
                     ({ outcome, result } = this.navigationResult(client.stopMoving(message.toolCallId)));
+                    break;
+                }
+                case "wa_join_meeting": {
+                    const arguments_ = JoinMeetingArgumentsSchema.parse(message.arguments);
+                    client.respondToMeetingInvitation(arguments_.requestSenderUserUuid, arguments_.accept);
+                    result = {
+                        accepted: arguments_.accept,
+                        requestSenderUserUuid: arguments_.requestSenderUserUuid,
+                    };
+                    break;
+                }
+                case "wa_leave_meeting": {
+                    LeaveMeetingArgumentsSchema.parse(message.arguments);
+                    await this.connectorHub.stopMedia(agent.id, "left_by_hermes");
+                    await client.leaveMeeting("left_by_hermes");
+                    result = { left: true };
+                    break;
+                }
+                case "wa_speak": {
+                    const arguments_ = SpeakArgumentsSchema.parse(message.arguments);
+                    const speech = await this.connectorHub.publishSpeech(agent.id, arguments_.text, agent.voiceId);
+                    outcome =
+                        speech.outcome === "published"
+                            ? "succeeded"
+                            : speech.outcome === "interrupted"
+                              ? "cancelled"
+                              : "failed";
+                    result = {
+                        mediaSessionId: speech.mediaSessionId,
+                        speechId: speech.speechId,
+                        publication: speech.outcome,
+                        reason: speech.reason,
+                    };
                     break;
                 }
                 default: {

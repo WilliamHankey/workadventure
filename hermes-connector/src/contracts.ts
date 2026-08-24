@@ -1,5 +1,6 @@
 import type {
     AgentToolName,
+    AgentLane,
     SafeProfile,
     ServerMessage,
     WorldEventDispatch,
@@ -49,4 +50,34 @@ export interface ConnectorTransport {
     connect(): Promise<void>;
     send(message: unknown): Promise<void>;
     close(): Promise<void>;
+}
+
+export interface HermesMediaTranscript {
+    utteranceId: string;
+    sourceParticipantIdentity: string;
+    sourceParticipantUuid: string;
+    text: string;
+    language: string | null;
+    startedAt: string;
+    endedAt: string;
+}
+
+export interface HermesMediaSessionHandlers {
+    ready(): Promise<void>;
+    transcript(transcript: HermesMediaTranscript): Promise<void>;
+    stopped(reason: string): Promise<void>;
+}
+
+export interface HermesMediaSession {
+    readonly lane: AgentLane;
+    readonly mediaSessionId: string;
+    speak(speechId: string, text: string, voiceId: string | null): Promise<"published" | "interrupted">;
+    stop(reason: string): Promise<void>;
+}
+
+export interface HermesMediaAdapter {
+    start(
+        invitation: Extract<ServerMessage, { type: "media.invitation" }>,
+        handlers: HermesMediaSessionHandlers
+    ): Promise<HermesMediaSession>;
 }

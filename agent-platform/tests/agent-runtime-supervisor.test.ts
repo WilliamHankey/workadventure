@@ -10,7 +10,7 @@ import WebSocket, { type RawData } from "ws";
 
 import { buildApp, type AppDependencies } from "../src/app";
 import { ConnectorHub } from "../src/connector/connector-hub";
-import { CreateAgentSchema, CreateMapSchema } from "../src/domain/schemas";
+import { CreateAgentSchema, CreateMapSchema, type AgentRecord } from "../src/domain/schemas";
 import {
     MemoryAuditSink,
     MemoryDesiredStatePublisher,
@@ -62,6 +62,7 @@ class FakeAgentRoomClient {
     readonly statuses: AgentAvailabilityName[] = [];
     readonly emotes: string[] = [];
     readonly moves: Array<{ x: number; y: number; actionId: string }> = [];
+    readonly voiceIndicators: boolean[] = [];
     started = false;
 
     public constructor(readonly options: WorkAdventureRoomClientOptions) {}
@@ -84,6 +85,16 @@ class FakeAgentRoomClient {
 
     emote(emote: string): void {
         this.emotes.push(emote);
+    }
+
+    respondToMeetingInvitation(_senderUserUuid: string, _accept: boolean): void {}
+
+    leaveMeeting(_reason?: string): Promise<void> {
+        return Promise.resolve();
+    }
+
+    setVoiceIndicator(enabled: boolean): void {
+        this.voiceIndicators.push(enabled);
     }
 
     moveTo(x: number, y: number, actionId: string): Promise<NavigationOutcome> {
@@ -128,6 +139,9 @@ describe("Hermes agent runtime supervisor", () => {
     let app: Awaited<ReturnType<typeof buildApp>>;
     let socket: WebSocket;
     let supervisor: AgentRuntimeSupervisor;
+    let firstAgent: AgentRecord;
+    let secondAgent: AgentRecord;
+    let rooms: Map<string, FakeAgentRoomClient>;
 
     beforeEach(async () => {
         const catalog = new MemoryHermesProfileCatalog();
@@ -146,7 +160,7 @@ describe("Hermes agent runtime supervisor", () => {
                 entryPoints: [{ name: "start", x: 32, y: 64 }],
             }),
         );
-        const firstAgent = await service.createAgent(
+        firstAgent = await service.createAgent(
             CreateAgentSchema.parse({
                 displayName: "Agent One",
                 hermesProfileId: "profile-one",
@@ -160,7 +174,7 @@ describe("Hermes agent runtime supervisor", () => {
                 enabled: true,
             }),
         );
-        const secondAgent = await service.createAgent(
+        secondAgent = await service.createAgent(
             CreateAgentSchema.parse({
                 displayName: "Agent Two",
                 hermesProfileId: "profile-two",
@@ -174,7 +188,7 @@ describe("Hermes agent runtime supervisor", () => {
                 enabled: true,
             }),
         );
-        const rooms = new Map<string, FakeAgentRoomClient>();
+        rooms = new Map<string, FakeAgentRoomClient>();
         supervisor = new AgentRuntimeSupervisor(service, hub, {
             pusherWebSocketUrl: new URL("ws://play.example/ws/room"),
             identityProvider: { issueToken: (agentId) => Promise.resolve(`token-${agentId}`) },
@@ -342,5 +356,116 @@ describe("Hermes agent runtime supervisor", () => {
 
     it("keeps inbound world events and outbound Hermes actions on one immutable agent lane", () => {
         expect(socket.readyState).toBe(WebSocket.OPEN);
+    });
+
+    it("routes invitation-bound transcripts through Hermes and publishes speech only on that agent lane", async () => {
+        const firstRoom = rooms.get(firstAgent.id);
+        const secondRoom = rooms.get(secondAgent.id);
+        if (firstRoom === undefined || secondRoom === undefined || firstRoom.options.onMediaInvitation === undefined) {
+            throw new Error("Expected both media-capable agent rooms");
+        }
+        const invitationPromise = receive(socket);
+        await firstRoom.options.onMediaInvitation({
+            mediaSessionId: "media-e2e-1",
+            spaceName: "meeting-space",
+            serverUrl: "wss://livekit.example",
+            token: "livekit-token",
+            allowedParticipantIdentity: "human-space-77",
+            allowedParticipantUuid: "human-77",
+        });
+        const invitation = await invitationPromise;
+        if (invitation.type !== "media.invitation") throw new Error("Expected media.invitation");
+        expect(invitation.lane).toMatchObject({ agentId: firstAgent.id, profileId: "profile-one" });
+
+        socket.send(
+            JSON.stringify(
+                ClientMessageSchema.parse({
+                    type: "media.ready",
+                    messageId: "media-ready-e2e",
+                    sentAt: new Date().toISOString(),
+                    lane: invitation.lane,
+                    mediaSessionId: invitation.mediaSessionId,
+                    spaceName: invitation.spaceName,
+                }),
+            ),
+        );
+        await new Promise<void>((resolve) => {
+            setTimeout(resolve, 0);
+        });
+        expect(firstRoom.voiceIndicators).toEqual([true]);
+        expect(secondRoom.voiceIndicators).toEqual([]);
+
+        const transcriptEventPromise = receive(socket);
+        socket.send(
+            JSON.stringify(
+                ClientMessageSchema.parse({
+                    type: "media.transcript",
+                    messageId: "media-transcript-e2e",
+                    sentAt: new Date().toISOString(),
+                    lane: invitation.lane,
+                    mediaSessionId: invitation.mediaSessionId,
+                    utteranceId: "utterance-e2e-1",
+                    sourceParticipantIdentity: "human-space-77",
+                    sourceParticipantUuid: "human-77",
+                    text: "Please answer aloud",
+                    language: "en-ZA",
+                    startedAt: new Date().toISOString(),
+                    endedAt: new Date().toISOString(),
+                }),
+            ),
+        );
+        const transcriptEvent = await transcriptEventPromise;
+        if (transcriptEvent.type !== "world.event") throw new Error("Expected voice world.event");
+        expect(transcriptEvent.event).toMatchObject({
+            kind: "voice_transcript",
+            payload: { text: "Please answer aloud", sourceParticipantUuid: "human-77" },
+        });
+
+        const speechPromise = receive(socket);
+        socket.send(
+            JSON.stringify(
+                ClientMessageSchema.parse({
+                    type: "tool.call",
+                    messageId: "voice-tool-e2e",
+                    sentAt: new Date().toISOString(),
+                    lane: transcriptEvent.lane,
+                    eventId: transcriptEvent.eventId,
+                    hermesRunId: "voice-run-e2e",
+                    toolCallId: "voice-tool-call-e2e",
+                    name: "wa_speak",
+                    arguments: { text: "Hermes chose this spoken response" },
+                }),
+            ),
+        );
+        const speech = await speechPromise;
+        if (speech.type !== "speech.publish") throw new Error("Expected speech.publish");
+        expect(speech).toMatchObject({
+            lane: { agentId: firstAgent.id, profileId: "profile-one" },
+            mediaSessionId: invitation.mediaSessionId,
+            text: "Hermes chose this spoken response",
+            voiceId: "voice-1",
+        });
+
+        const toolResultPromise = receive(socket);
+        socket.send(
+            JSON.stringify(
+                ClientMessageSchema.parse({
+                    type: "speech.result",
+                    messageId: "speech-result-e2e",
+                    sentAt: new Date().toISOString(),
+                    lane: speech.lane,
+                    mediaSessionId: speech.mediaSessionId,
+                    speechId: speech.speechId,
+                    outcome: "published",
+                    reason: null,
+                }),
+            ),
+        );
+        await expect(toolResultPromise).resolves.toMatchObject({
+            type: "tool.result",
+            lane: { agentId: firstAgent.id, profileId: "profile-one" },
+            outcome: "succeeded",
+            result: { publication: "published" },
+        });
     });
 });

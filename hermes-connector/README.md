@@ -29,3 +29,16 @@ npm run start --workspace=@workadventure/hermes-connector
 Use `ws://localhost` only for local development. Production startup rejects non-TLS connector URLs.
 
 The connector registration token authenticates the outbound platform connection; it is not a Hermes profile key. Raw profile keys are read only from each profile's local `.env` or `config.yaml`, used only for loopback HTTP requests, and omitted from protocol schemas and logs.
+
+## Invitation-bound voice bridge
+
+Voice is opt-in and fail-closed. Configure `HERMES_MEDIA_BRIDGE_URL` only when a local Hermes Desktop media bridge is running on a loopback `ws://` or `wss://` URL. An optional `HERMES_MEDIA_BRIDGE_TOKEN` authenticates that local hop. The connector rejects non-loopback bridge URLs.
+
+```powershell
+$env:HERMES_MEDIA_BRIDGE_URL = "ws://127.0.0.1:8766/v1/media"
+$env:HERMES_MEDIA_BRIDGE_TOKEN = "replace-with-a-local-bridge-token"
+```
+
+The bridge receives a short-lived LiveKit invitation token only after Hermes accepts a human's WorkAdventure meeting invitation. It must use the supplied participant identity/UUID allowlist, VAD policy, and session lane; return only final transcripts from that participant; run STT/TTS locally; and stop immediately when the connector sends `stop`. If the bridge is absent, the connector returns `media_adapter_unavailable` and the Woka remains silent.
+
+Local bridge messages are `start`, `ready`, `transcript`, `speech`, `speech.result`, `stop`, and `stopped`. The checked-in `InvitationBoundVoiceSession` supplies the fixed VAD, participant filtering, single-STT lifecycle, local TTS publication, barge-in, and idempotent-stop core for a Hermes Desktop bridge implementation.

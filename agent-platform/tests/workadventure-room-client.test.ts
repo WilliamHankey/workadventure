@@ -4,11 +4,18 @@ import {
     PositionMessage_Direction,
     PusherToFrontWebSocketMessage,
     RoomJoinedMessage,
+    SpaceUser,
     type ServerToClientMessage,
 } from "@workadventure/messages";
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentWorldEvent, RoomSocket, RoomSocketFactory, RoomSocketHandlers } from "../src/runtime/contracts";
+import type {
+    AgentMediaInvitation,
+    AgentWorldEvent,
+    RoomSocket,
+    RoomSocketFactory,
+    RoomSocketHandlers,
+} from "../src/runtime/contracts";
 import { parseTiledNavigationGraph } from "../src/runtime/navigation-graph";
 import { WorkAdventureRoomClient } from "../src/runtime/workadventure-room-client";
 
@@ -232,6 +239,167 @@ describe("headless WorkAdventure room client", () => {
         expect(secondSocket.sent.map((payload) => decodeClientFrame(payload).nonce)).toEqual([1, 2]);
         client.stop();
         vi.useRealTimers();
+    });
+
+    it("accepts only the Hermes-approved invitation and binds LiveKit media to that human and space", async () => {
+        const sockets: FakeRoomSocket[] = [];
+        const events: AgentWorldEvent[] = [];
+        const mediaInvitations: AgentMediaInvitation[] = [];
+        const client = new WorkAdventureRoomClient({
+            agentId: "agent-voice",
+            token: "signed-token",
+            pusherWebSocketUrl: new URL("ws://play.example/ws/room"),
+            roomUrl: "https://play.example/_/global/maps.example/office.tmj",
+            roomName: "Agent Office",
+            displayName: "Voice Agent",
+            textureIds: ["body-1"],
+            companionTextureId: null,
+            spawn: { x: 16, y: 16 },
+            ownerWorkAdventureUuid: "owner-1",
+            onEvent: (event) => {
+                events.push(event);
+                return Promise.resolve();
+            },
+            onMediaInvitation: (invitation) => {
+                mediaInvitations.push(invitation);
+                return Promise.resolve();
+            },
+            socketFactory: (_url, _protocols, handlers) => {
+                const socket = new FakeRoomSocket(handlers);
+                sockets.push(socket);
+                return socket;
+            },
+        });
+
+        client.start();
+        const socket = requireItem(sockets.at(0), "voice socket");
+        socket.open();
+        socket.receive(1, {
+            message: {
+                $case: "meetingInvitationRequestReceivedMessage",
+                meetingInvitationRequestReceivedMessage: {
+                    senderUserUuid: "owner-1",
+                    senderUserId: 42,
+                    senderName: "William",
+                    senderPlayUri: "https://play.example/_/global/maps.example/office.tmj",
+                },
+            },
+        });
+        expect(events).toContainEqual({
+            type: "meeting.invitation",
+            senderUserUuid: "owner-1",
+            senderUserId: 42,
+            senderName: "William",
+            senderPlayUri: "https://play.example/_/global/maps.example/office.tmj",
+        });
+        expect(() => client.respondToMeetingInvitation("other-user", true)).toThrow(/No current meeting invitation/);
+
+        client.respondToMeetingInvitation("owner-1", true);
+        expect(socket.sent.slice(-2).map((payload) => decodeClientFrame(payload).message?.message?.$case)).toEqual([
+            "meetingInvitationResponseMessage",
+            "askPositionMessage",
+        ]);
+
+        socket.receive(2, {
+            message: {
+                $case: "joinSpaceRequestMessage",
+                joinSpaceRequestMessage: { spaceName: "meeting-space", propertiesToSync: ["microphoneState"] },
+            },
+        });
+        const joinQuery = decodeClientFrame(requireItem(socket.sent.at(-1), "join space query"));
+        expect(joinQuery.message?.message).toMatchObject({
+            $case: "queryMessage",
+            queryMessage: { query: { $case: "joinSpaceQuery", joinSpaceQuery: { spaceName: "meeting-space" } } },
+        });
+        const queryId =
+            joinQuery.message?.message?.$case === "queryMessage" ? joinQuery.message.message.queryMessage.id : 0;
+        socket.receive(3, {
+            message: {
+                $case: "answerMessage",
+                answerMessage: {
+                    id: queryId,
+                    answer: { $case: "joinSpaceAnswer", joinSpaceAnswer: { spaceUserId: "agent-space" } },
+                },
+            },
+        });
+        await Promise.resolve();
+        socket.receive(4, {
+            message: {
+                $case: "batchMessage",
+                batchMessage: {
+                    event: "",
+                    payload: [
+                        {
+                            message: {
+                                $case: "initSpaceUsersMessage",
+                                initSpaceUsersMessage: {
+                                    spaceName: "meeting-space",
+                                    metadata: "{}",
+                                    users: [
+                                        SpaceUser.fromPartial({
+                                            spaceUserId: "human-space",
+                                            uuid: "owner-1",
+                                            name: "William",
+                                            microphoneState: true,
+                                        }),
+                                    ],
+                                },
+                            },
+                        },
+                    ],
+                },
+            },
+        });
+        socket.receive(5, {
+            message: {
+                $case: "batchMessage",
+                batchMessage: {
+                    event: "",
+                    payload: [
+                        {
+                            message: {
+                                $case: "privateEvent",
+                                privateEvent: {
+                                    spaceName: "meeting-space",
+                                    receiverUserId: "agent-space",
+                                    sender: SpaceUser.fromPartial({ spaceUserId: "agent-space", uuid: "agent-voice" }),
+                                    spaceEvent: {
+                                        event: {
+                                            $case: "livekitInvitationMessage",
+                                            livekitInvitationMessage: {
+                                                serverUrl: "wss://livekit.example",
+                                                token: "invitation-token",
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    ],
+                },
+            },
+        });
+        await Promise.resolve();
+
+        expect(mediaInvitations).toHaveLength(1);
+        expect(mediaInvitations.at(0)).toMatchObject({
+            spaceName: "meeting-space",
+            serverUrl: "wss://livekit.example",
+            token: "invitation-token",
+            allowedParticipantIdentity: "human-space",
+            allowedParticipantUuid: "owner-1",
+        });
+        client.setVoiceIndicator(true);
+        expect(
+            decodeClientFrame(requireItem(socket.sent.at(-1), "voice indicator frame")).message?.message,
+        ).toMatchObject({
+            $case: "updateSpaceUserMessage",
+            updateSpaceUserMessage: {
+                spaceName: "meeting-space",
+                user: { spaceUserId: "agent-space", microphoneState: true, showVoiceIndicator: true },
+            },
+        });
+        client.stop();
     });
 
     it("emits collision-aware movement frames and a typed completion observation", async () => {

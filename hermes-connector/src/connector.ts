@@ -14,6 +14,8 @@ import { asError } from "catch-unknown";
 
 import type {
     ConnectorTransport,
+    HermesMediaAdapter,
+    HermesMediaSession,
     HermesProfileDiscovery,
     HermesProfileGateway,
     HermesProfileGatewayFactory,
@@ -23,6 +25,7 @@ interface ConnectorOptions {
     connectorId: string;
     instanceId?: string;
     maxQueuedEventsPerProfile?: number;
+    mediaAdapter?: HermesMediaAdapter;
 }
 
 interface ActiveRun {
@@ -57,6 +60,7 @@ export class HermesConnector {
     private readonly activeRuns = new Map<string, ActiveRun>();
     private readonly queuedCounts = new Map<string, number>();
     private readonly profileQueues = new Map<string, Promise<void>>();
+    private readonly mediaSessions = new Map<string, HermesMediaSession>();
     private heartbeat: ReturnType<typeof setInterval> | undefined;
 
     constructor(
@@ -83,6 +87,8 @@ export class HermesConnector {
         for (const active of this.activeRuns.values()) {
             active.abortController.abort(new Error("Connector stopped"));
         }
+        await Promise.all([...this.mediaSessions.values()].map(async (session) => session.stop("connector_stopped")));
+        this.mediaSessions.clear();
         await this.transport.close();
     }
 
@@ -158,7 +164,121 @@ export class HermesConnector {
             case "tool.result":
                 await this.handleToolResult(message);
                 break;
+            case "media.invitation":
+                await this.handleMediaInvitation(message);
+                break;
+            case "media.stop":
+                await this.stopMediaSession(message.lane, message.mediaSessionId, message.reason);
+                break;
+            case "speech.publish":
+                await this.publishSpeech(message);
+                break;
         }
+    }
+
+    private async handleMediaInvitation(
+        message: Extract<ReturnType<typeof ServerMessageSchema.parse>, { type: "media.invitation" }>
+    ): Promise<void> {
+        this.requireBinding(message.lane);
+        const adapter = this.options.mediaAdapter;
+        if (adapter === undefined) {
+            await this.send({
+                ...messageBase(),
+                type: "media.stopped",
+                lane: message.lane,
+                mediaSessionId: message.mediaSessionId,
+                reason: "media_adapter_unavailable",
+            });
+            return;
+        }
+        const existing = this.mediaSessions.get(message.mediaSessionId);
+        if (existing !== undefined) {
+            await existing.stop("session_replaced");
+            this.mediaSessions.delete(message.mediaSessionId);
+        }
+        const session = await adapter.start(message, {
+            ready: async () =>
+                this.send({
+                    ...messageBase(),
+                    type: "media.ready",
+                    lane: message.lane,
+                    mediaSessionId: message.mediaSessionId,
+                    spaceName: message.spaceName,
+                }),
+            transcript: async (transcript) => {
+                const current = this.mediaSessions.get(message.mediaSessionId);
+                if (current === undefined || !bindingMatchesLane(this.requireBinding(message.lane), current.lane)) {
+                    throw new Error("Media transcript does not match the active immutable lane");
+                }
+                if (
+                    transcript.sourceParticipantIdentity !== message.allowedParticipantIdentity ||
+                    transcript.sourceParticipantUuid !== message.allowedParticipantUuid
+                ) {
+                    throw new Error("Media transcript source is outside the invitation participant binding");
+                }
+                await this.send({
+                    ...messageBase(),
+                    type: "media.transcript",
+                    lane: message.lane,
+                    mediaSessionId: message.mediaSessionId,
+                    ...transcript,
+                });
+            },
+            stopped: async (reason) => {
+                this.mediaSessions.delete(message.mediaSessionId);
+                await this.send({
+                    ...messageBase(),
+                    type: "media.stopped",
+                    lane: message.lane,
+                    mediaSessionId: message.mediaSessionId,
+                    reason,
+                });
+            },
+        });
+        if (!bindingMatchesLane(this.requireBinding(message.lane), session.lane)) {
+            await session.stop("adapter_lane_mismatch");
+            throw new Error("Media adapter returned a session for another immutable lane");
+        }
+        this.mediaSessions.set(message.mediaSessionId, session);
+    }
+
+    private async stopMediaSession(lane: AgentLane, mediaSessionId: string, reason: string): Promise<void> {
+        this.requireBinding(lane);
+        const session = this.mediaSessions.get(mediaSessionId);
+        if (session === undefined) {
+            return;
+        }
+        if (!bindingMatchesLane(this.requireBinding(lane), session.lane)) {
+            throw new Error("Cannot stop a media session from another immutable lane");
+        }
+        this.mediaSessions.delete(mediaSessionId);
+        await session.stop(reason);
+    }
+
+    private async publishSpeech(
+        message: Extract<ReturnType<typeof ServerMessageSchema.parse>, { type: "speech.publish" }>
+    ): Promise<void> {
+        this.requireBinding(message.lane);
+        const session = this.mediaSessions.get(message.mediaSessionId);
+        let outcome: "published" | "interrupted" | "failed" = "failed";
+        let reason: string | null = "media_session_unavailable";
+        try {
+            if (session !== undefined && bindingMatchesLane(this.requireBinding(message.lane), session.lane)) {
+                outcome = await session.speak(message.speechId, message.text, message.voiceId);
+                reason = null;
+            }
+        } catch (error: unknown) {
+            reason = asError(error).message.slice(0, 255);
+        }
+        await this.send({
+            ...messageBase(),
+            type: "speech.result",
+            lane: message.lane,
+            mediaSessionId: message.mediaSessionId,
+            speechId: message.speechId,
+            outcome,
+            reason,
+        });
     }
 
     private async enqueue(dispatch: WorldEventDispatch): Promise<void> {
