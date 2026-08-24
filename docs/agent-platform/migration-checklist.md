@@ -8,10 +8,11 @@
 - [x] Verify fork `master` and upstream `master` both point to `f03bc682e43f3c96dab5925948a68bbbdf66ae25`.
 - [x] Create `feature/hermes-agent-platform` from that exact SHA.
 - [x] Keep `master` free of project commits.
+- [x] Enable GitHub Issues on the fork.
 - [x] Preserve the PoC SHA with `archive/poc-2026-08-14`.
-- [ ] Add annotated tag `poc-2026-08-14` to the PoC when a tag-capable GitHub surface is available.
-- [ ] Create `WilliamHankey/workadventure-agent-world` from the official map starter template.
-- [ ] Record and verify the generated map repository baseline.
+- [ ] Add optional annotated tag `poc-2026-08-14` when a tag-capable authenticated surface is available.
+- [x] Create `WilliamHankey/workadventure-agent-world` from the official map starter template.
+- [x] Record and verify the generated map repository baseline.
 
 ## Migration rules
 
@@ -38,8 +39,8 @@
 
 Phase 1 must not start until:
 
-- [ ] the map project exists and its baseline is recorded;
+- [x] the map project exists and its baseline is recorded;
 - [ ] the baseline documentation is reviewed;
-- [ ] tracking issues are enabled/created;
+- [ ] phase tracking issues and milestones are created;
 - [x] the untouched upstream baseline smoke/build procedure is recorded or run in the connected Codex environment;
 - [ ] William explicitly accepts the Phase 0 checkpoint.
