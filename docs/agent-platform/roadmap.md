@@ -62,13 +62,15 @@ Status: code-complete and CI-accepted on 24 August 2026; live Lowcoder 2.7.6 imp
 
 ## Phase 6 — Voice
 
-Status: active.
+Status: code-complete and CI-accepted on 24 August 2026; real LiveKit/Hermes Desktop call remains a Phase 9 pilot gate ([issue #8](https://github.com/WilliamHankey/workadventure/issues/8)).
 
 - Invitation-bound LiveKit audio
 - VAD/STT → Hermes decision → TTS
 - Consent, indicators, loop prevention, and isolation tests
 
 ## Phase 7 — Virtual video
+
+Status: active.
 
 - Synthetic Woka/avatar track
 - Hermes-controlled publication
