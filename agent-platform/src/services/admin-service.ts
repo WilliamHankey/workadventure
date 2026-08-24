@@ -1,6 +1,7 @@
 import type { AuditSink, DesiredStatePublisher, HermesProfileCatalog, RegistryRepository } from "../domain/contracts";
 import type {
     AgentRecord,
+    AgentRuntimeStatus,
     CreateAgentInput,
     CreateMapInput,
     HermesProfileCatalogEntry,
@@ -116,6 +117,14 @@ export class AdminService {
             definitionVersion: version,
             occurredAt: new Date().toISOString(),
         });
+    }
+
+    async setAgentRuntimeStatus(
+        id: string,
+        status: AgentRuntimeStatus,
+        errorCode: string | null,
+    ): Promise<AgentRecord> {
+        return this.repository.setAgentRuntimeStatus(id, status, errorCode);
     }
 
     async listHermesProfiles(): Promise<HermesProfileCatalogEntry[]> {

@@ -1,5 +1,6 @@
 import type {
     AgentRecord,
+    AgentRuntimeStatus,
     CreateAgentInput,
     CreateMapInput,
     HermesProfileCatalogEntry,
@@ -29,6 +30,7 @@ export interface RegistryRepository {
     createAgent(input: CreateAgentInput): Promise<AgentRecord>;
     updateAgent(id: string, expectedVersion: number, input: UpdateAgentInput): Promise<AgentRecord>;
     deleteAgent(id: string, expectedVersion: number): Promise<void>;
+    setAgentRuntimeStatus(id: string, status: AgentRuntimeStatus, errorCode: string | null): Promise<AgentRecord>;
 }
 
 export interface AuditEvent {

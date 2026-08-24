@@ -5,7 +5,16 @@ interface StoredResult {
     response: unknown;
 }
 
-export class MemoryIdempotencyStore {
+export interface IdempotencyStore {
+    execute<Result>(
+        key: string,
+        fingerprint: string,
+        parse: (value: unknown) => Result,
+        operation: () => Promise<Result>,
+    ): Promise<Result>;
+}
+
+export class MemoryIdempotencyStore implements IdempotencyStore {
     private readonly results = new Map<string, StoredResult>();
 
     async execute<Result>(

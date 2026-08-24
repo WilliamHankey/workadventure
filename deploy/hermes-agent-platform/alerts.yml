@@ -1,0 +1,33 @@
+groups:
+  - name: hermes-agent-platform
+    rules:
+      - alert: AgentPlatformDown
+        expr: up{job="agent-platform"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: Hermes agent platform is unavailable
+      - alert: HermesDesktopDisconnected
+        expr: workadventure_agent_platform_connectors == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: No Hermes Desktop connector is active
+      - alert: AgentPlatformNotReady
+        expr: workadventure_agent_platform_ready == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: Agent platform durable dependencies are not ready
+      - alert: AgentPlatformMemoryHigh
+        expr: process_resident_memory_bytes{job="agent-platform"} > 1610612736
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Agent platform memory is above 1.5 GiB
+      - alert: AgentPlatformRateLimited
+        expr: increase(workadventure_agent_platform_rate_limited_total[5m]) > 20
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: Agent platform is rejecting sustained request bursts

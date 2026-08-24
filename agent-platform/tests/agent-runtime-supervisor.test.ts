@@ -149,10 +149,11 @@ describe("Hermes agent runtime supervisor", () => {
     let firstAgent: AgentRecord;
     let secondAgent: AgentRecord;
     let rooms: Map<string, FakeAgentRoomClient>;
+    let service: AdminService;
 
     beforeEach(async () => {
         const catalog = new MemoryHermesProfileCatalog();
-        const service = new AdminService(
+        service = new AdminService(
             new MemoryRegistryRepository(),
             new MemoryAuditSink(),
             new MemoryDesiredStatePublisher(),
@@ -352,7 +353,7 @@ describe("Hermes agent runtime supervisor", () => {
     });
 
     afterEach(async () => {
-        supervisor.stop();
+        await supervisor.stop();
         if (socket.readyState === WebSocket.OPEN) {
             await new Promise<void>((resolve) => {
                 socket.once("close", () => resolve());
@@ -364,6 +365,20 @@ describe("Hermes agent runtime supervisor", () => {
 
     it("keeps inbound world events and outbound Hermes actions on one immutable agent lane", () => {
         expect(socket.readyState).toBe(WebSocket.OPEN);
+    });
+
+    it("persists online and degraded runtime status for Lowcoder diagnostics", async () => {
+        expect(await service.getAgent(firstAgent.id)).toMatchObject({
+            runtimeStatus: "online",
+            runtimeErrorCode: null,
+        });
+        const room = rooms.get(firstAgent.id);
+        if (room === undefined) throw new Error("Expected first agent room");
+        await room.emit({ type: "connection.degraded", reason: "test disconnect" });
+        expect(await service.getAgent(firstAgent.id)).toMatchObject({
+            runtimeStatus: "degraded",
+            runtimeErrorCode: "workadventure_connection_degraded",
+        });
     });
 
     it("routes invitation-bound transcripts through Hermes and publishes speech only on that agent lane", async () => {

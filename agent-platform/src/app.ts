@@ -39,15 +39,18 @@ import {
     MemoryHermesProfileCatalog,
     MemoryRegistryRepository,
 } from "./infrastructure/memory-adapters";
+import { FixedWindowRateLimiter, PlatformMetrics, type RateLimitPolicy } from "./infrastructure/operational-guardrails";
 import { AdminService } from "./services/admin-service";
-import { MemoryIdempotencyStore } from "./services/idempotency-store";
+import { MemoryIdempotencyStore, type IdempotencyStore } from "./services/idempotency-store";
 
 const HealthSchema = z.object({ status: z.enum(["ok", "not_ready"]) });
 
 export interface AppDependencies {
     service: AdminService;
-    idempotency: MemoryIdempotencyStore;
+    idempotency: IdempotencyStore;
     connectorHub?: ConnectorHub;
+    healthCheck?: () => Promise<void>;
+    close?: () => Promise<void>;
 }
 
 export interface BuildAppOptions {
@@ -55,6 +58,7 @@ export interface BuildAppOptions {
     connectorToken?: string;
     dependencies?: AppDependencies;
     logger?: boolean;
+    rateLimit?: Partial<RateLimitPolicy>;
 }
 
 export const createDefaultDependencies = (): AppDependencies => {
@@ -93,6 +97,12 @@ export const buildApp = async (options: BuildAppOptions): Promise<FastifyInstanc
 
     const dependencies = options.dependencies ?? createDefaultDependencies();
     const app = Fastify({ logger: options.logger ?? false });
+    const rateLimiter = new FixedWindowRateLimiter({
+        windowMs: options.rateLimit?.windowMs ?? 60_000,
+        adminRequests: options.rateLimit?.adminRequests ?? 120,
+        connectorRequests: options.rateLimit?.connectorRequests ?? 30,
+    });
+    const metrics = new PlatformMetrics();
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
 
@@ -118,8 +128,37 @@ export const buildApp = async (options: BuildAppOptions): Promise<FastifyInstanc
         app.get("/connector/v1/ws", { websocket: true }, (socket) => dependencies.connectorHub?.attach(socket));
     }
 
-    app.addHook("onRequest", async (request) => {
+    app.addHook("onRequest", async (request, reply) => {
         await Promise.resolve();
+        const scope = request.url.startsWith("/api/v1/")
+            ? "admin"
+            : request.url.startsWith("/connector/v1/")
+              ? "connector"
+              : undefined;
+        if (scope !== undefined) {
+            const expectedToken = scope === "admin" ? options.adminToken : options.connectorToken;
+            const authorized =
+                expectedToken !== undefined && secureTokenMatch(request.headers.authorization, expectedToken);
+            const identity = authorized
+                ? `authorized:${createHash("sha256").update(expectedToken).digest("hex").slice(0, 16)}`
+                : `unauthorized:${request.ip}`;
+            const decision = rateLimiter.check(scope, identity);
+            reply.header("x-ratelimit-limit", decision.limit);
+            reply.header("x-ratelimit-remaining", decision.remaining);
+            if (!decision.allowed) {
+                metrics.recordRateLimit(scope);
+                return reply
+                    .header("retry-after", decision.retryAfterSeconds)
+                    .status(429)
+                    .send({
+                        error: {
+                            code: "rate_limited",
+                            message: "Request rate limit exceeded",
+                            requestId: request.id,
+                        },
+                    });
+            }
+        }
         if (
             request.url.startsWith("/api/v1/") &&
             !secureTokenMatch(request.headers.authorization, options.adminToken)
@@ -133,6 +172,11 @@ export const buildApp = async (options: BuildAppOptions): Promise<FastifyInstanc
         ) {
             throw new ConnectorUnauthorizedError();
         }
+    });
+
+    app.addHook("onResponse", (request, reply, done) => {
+        metrics.recordRequest(request.method, request.routeOptions.url ?? "unmatched", reply.statusCode);
+        done();
     });
 
     app.setErrorHandler((error, request, reply) => {
@@ -157,12 +201,23 @@ export const buildApp = async (options: BuildAppOptions): Promise<FastifyInstanc
     app.get("/health/live", { schema: { response: { 200: HealthSchema } } }, () => ({ status: "ok" }));
     app.get("/health/ready", { schema: { response: { 200: HealthSchema, 503: HealthSchema } } }, async (_, reply) => {
         try {
-            await dependencies.service.healthCheck();
+            await (dependencies.healthCheck?.() ?? dependencies.service.healthCheck());
+            metrics.setReady(true);
             return { status: "ok" };
         } catch {
+            metrics.setReady(false);
             return reply.status(503).send({ status: "not_ready" });
         }
     });
+    app.get("/metrics", async (_, reply) =>
+        reply
+            .type("text/plain; version=0.0.4; charset=utf-8")
+            .send(metrics.render(dependencies.connectorHub?.activeConnectionCount() ?? 0)),
+    );
+
+    if (dependencies.close !== undefined) {
+        app.addHook("onClose", dependencies.close);
+    }
 
     const api = app.withTypeProvider<ZodTypeProvider>();
     const secured = [{ lowcoderBearer: [] }];

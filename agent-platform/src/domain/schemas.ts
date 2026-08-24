@@ -67,9 +67,21 @@ export const PutMapAssetSchema = z.object({
     contentBase64: z.string().min(1).max(2_800_000),
 });
 
+export const MapAssetPathSchema = z
+    .string()
+    .min(1)
+    .max(512)
+    .refine(
+        (value) =>
+            !value.startsWith("/") &&
+            !value.includes("\\") &&
+            value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."),
+        "Asset path must be a safe relative path",
+    );
+
 export const MapAssetSchema = z.object({
     mapId: IdentifierSchema,
-    path: z.string().min(1).max(512),
+    path: MapAssetPathSchema,
     mimeType: z.string().min(1).max(255),
     size: z.number().int().nonnegative(),
     checksum: z.string().min(1).max(128),
@@ -91,6 +103,7 @@ export const AgentPermissionsSchema = z.object({
     browser: z.boolean().default(false),
     moderation: z.boolean().default(false),
 });
+export const AgentRuntimeStatusSchema = z.enum(["offline", "starting", "online", "degraded", "error"]);
 
 export const CreateAgentSchema = z.object({
     displayName: z.string().min(1).max(160),
@@ -125,7 +138,7 @@ export const AgentRecordSchema = CreateAgentSchema.extend({
     version: z.number().int().positive(),
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
-    runtimeStatus: z.enum(["offline", "starting", "online", "degraded", "error"]),
+    runtimeStatus: AgentRuntimeStatusSchema,
     runtimeErrorCode: z.string().max(255).nullable(),
 });
 
@@ -150,7 +163,7 @@ export const ErrorResponseSchema = z.object({
 });
 
 export const IdParamsSchema = z.object({ id: IdentifierSchema });
-export const MapAssetParamsSchema = z.object({ id: IdentifierSchema, "*": z.string().min(1).max(512) });
+export const MapAssetParamsSchema = z.object({ id: IdentifierSchema, "*": MapAssetPathSchema });
 export const MutationHeadersSchema = z.object({
     "idempotency-key": z.string().min(8).max(255),
 });
@@ -168,4 +181,5 @@ export type MapAsset = z.infer<typeof MapAssetSchema>;
 export type CreateAgentInput = z.infer<typeof CreateAgentSchema>;
 export type UpdateAgentInput = z.infer<typeof UpdateAgentSchema>;
 export type AgentRecord = z.infer<typeof AgentRecordSchema>;
+export type AgentRuntimeStatus = z.infer<typeof AgentRuntimeStatusSchema>;
 export type HermesProfileCatalogEntry = z.infer<typeof HermesProfileCatalogEntrySchema>;

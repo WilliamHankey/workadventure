@@ -11,6 +11,7 @@ import type {
 import { ConflictError, NotFoundError, VersionConflictError } from "../domain/errors";
 import type {
     AgentRecord,
+    AgentRuntimeStatus,
     CreateAgentInput,
     CreateMapInput,
     HermesProfileCatalogEntry,
@@ -249,6 +250,17 @@ export class MemoryRegistryRepository implements RegistryRepository {
         this.requireVersion("Agent", expectedVersion, current.version);
         this.agents.delete(id);
         return Promise.resolve();
+    }
+
+    setAgentRuntimeStatus(id: string, status: AgentRuntimeStatus, errorCode: string | null): Promise<AgentRecord> {
+        const current = this.requireAgent(id);
+        const updated: AgentRecord = {
+            ...current,
+            runtimeStatus: status,
+            runtimeErrorCode: errorCode,
+        };
+        this.agents.set(id, updated);
+        return Promise.resolve(clone(updated));
     }
 
     private requireMap(id: string): MapRecord {

@@ -56,6 +56,7 @@ export interface AgentRuntimeSupervisorOptions {
     socketFactory?: RoomSocketFactory;
     roomClientFactory?: AgentRoomClientFactory;
     navigationGraphCache?: NavigationGraphCache;
+    maxActiveAgents?: number;
     onError?: (agentId: string, error: Error) => void;
 }
 
@@ -106,25 +107,39 @@ export class AgentRuntimeSupervisor {
         }, this.options.reconcileIntervalMs ?? 5_000);
     }
 
-    stop(): void {
+    async stop(): Promise<void> {
         if (this.reconcileTimer !== undefined) {
             clearInterval(this.reconcileTimer);
             this.reconcileTimer = undefined;
         }
+        const shutdownTasks: Array<Promise<unknown>> = [];
         for (const active of this.activeAgents.values()) {
             active.unregisterToolHandler();
             active.unregisterMediaHandler();
-            this.connectorHub.stopMedia(active.agent.id, "runtime_stopped").catch(() => undefined);
+            shutdownTasks.push(this.connectorHub.stopMedia(active.agent.id, "runtime_stopped"));
             active.client.stop();
+            shutdownTasks.push(this.service.setAgentRuntimeStatus(active.agent.id, "offline", null));
         }
         this.activeAgents.clear();
+        await Promise.allSettled(shutdownTasks);
     }
 
     async reconcile(): Promise<void> {
         const [agents, maps] = await Promise.all([this.service.listAgents(), this.service.listMaps()]);
         const mapsById = new Map(maps.map((map) => [map.id, map]));
-        const desiredIds = new Set(agents.filter((agent) => agent.enabled).map((agent) => agent.id));
+        const enabledAgents = agents
+            .filter((agent) => agent.enabled)
+            .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+        const admittedAgents = enabledAgents.slice(0, this.options.maxActiveAgents ?? 10);
+        const desiredIds = new Set(admittedAgents.map((agent) => agent.id));
+        await Promise.all(
+            enabledAgents.slice(this.options.maxActiveAgents ?? 10).map(async (agent) => {
+                await this.service.setAgentRuntimeStatus(agent.id, "degraded", "active_agent_capacity_exceeded");
+                this.reportError(agent.id, new Error("Active agent capacity gate exceeded"));
+            }),
+        );
 
+        const stoppedStatusUpdates: Array<Promise<void>> = [];
         for (const [agentId, active] of this.activeAgents.entries()) {
             if (!desiredIds.has(agentId)) {
                 active.unregisterToolHandler();
@@ -132,24 +147,30 @@ export class AgentRuntimeSupervisor {
                 this.connectorHub.stopMedia(agentId, "agent_disabled").catch(() => undefined);
                 active.client.stop();
                 this.activeAgents.delete(agentId);
+                stoppedStatusUpdates.push(
+                    this.service
+                        .setAgentRuntimeStatus(agentId, "offline", null)
+                        .then(() => undefined)
+                        .catch(() => undefined),
+                );
             }
         }
+        await Promise.all(stoppedStatusUpdates);
 
         await Promise.all(
-            agents
-                .filter((candidate) => candidate.enabled)
-                .map(async (agent) => {
-                    const map = mapsById.get(agent.mapId);
-                    if (map === undefined) {
-                        this.reportError(agent.id, new Error(`Map '${agent.mapId}' is unavailable`));
-                        return;
-                    }
-                    const revision = `${String(agent.version)}:${String(map.version)}`;
-                    if (this.activeAgents.get(agent.id)?.revision === revision) {
-                        return;
-                    }
-                    await this.replaceAgent(agent, map, revision);
-                }),
+            admittedAgents.map(async (agent) => {
+                const map = mapsById.get(agent.mapId);
+                if (map === undefined) {
+                    await this.service.setAgentRuntimeStatus(agent.id, "error", "map_unavailable");
+                    this.reportError(agent.id, new Error(`Map '${agent.mapId}' is unavailable`));
+                    return;
+                }
+                const revision = `${String(agent.version)}:${String(map.version)}`;
+                if (this.activeAgents.get(agent.id)?.revision === revision) {
+                    return;
+                }
+                await this.replaceAgent(agent, map, revision);
+            }),
         );
     }
 
@@ -163,11 +184,13 @@ export class AgentRuntimeSupervisor {
             this.activeAgents.delete(agent.id);
         }
         if (map.roomUrl === null) {
+            await this.service.setAgentRuntimeStatus(agent.id, "error", "map_room_url_missing");
             this.reportError(agent.id, new Error(`Map '${map.id}' does not have a WorkAdventure roomUrl`));
             return;
         }
         const spawn = map.entryPoints.find((entryPoint) => entryPoint.name === agent.spawnPoint);
         if (spawn === undefined) {
+            await this.service.setAgentRuntimeStatus(agent.id, "error", "spawn_point_missing");
             this.reportError(
                 agent.id,
                 new Error(`Spawn point '${agent.spawnPoint}' is not defined on map '${map.id}'`),
@@ -176,6 +199,7 @@ export class AgentRuntimeSupervisor {
         }
 
         try {
+            await this.service.setAgentRuntimeStatus(agent.id, "starting", null);
             const navigationGraph = await this.service
                 .getMapContent(map.id)
                 .then((content) => this.navigationGraphCache.get(map, content))
@@ -228,12 +252,22 @@ export class AgentRuntimeSupervisor {
                 unregisterMediaHandler,
             });
             client.start();
+            await this.service.setAgentRuntimeStatus(agent.id, "online", null);
         } catch (error: unknown) {
+            await this.service.setAgentRuntimeStatus(agent.id, "error", "runtime_start_failed").catch(() => undefined);
             this.reportError(agent.id, normalizeError(error));
         }
     }
 
     private async handleWorldEvent(agent: AgentRecord, event: AgentWorldEvent): Promise<void> {
+        if (event.type === "room.joined") {
+            await this.service.setAgentRuntimeStatus(agent.id, "online", null);
+            return;
+        }
+        if (event.type === "connection.degraded") {
+            await this.service.setAgentRuntimeStatus(agent.id, "degraded", "workadventure_connection_degraded");
+            return;
+        }
         if (
             event.type === "navigation.completed" ||
             event.type === "navigation.failed" ||

@@ -109,7 +109,12 @@ export class ConnectorHub {
         private readonly service: AdminService,
         private readonly catalog: MemoryHermesProfileCatalog,
         private readonly heartbeatIntervalMs = 30_000,
+        private readonly maxMediaSessions = 2,
     ) {}
+
+    activeConnectionCount(): number {
+        return this.connections.size;
+    }
 
     attach(socket: WebSocket): void {
         let connectorId: string | undefined;
@@ -175,6 +180,9 @@ export class ConnectorHub {
                 reason: "media_invitation_replaced",
             });
             this.mediaSessions.delete(agentId);
+        }
+        if (this.mediaSessions.size >= this.maxMediaSessions) {
+            throw new Error(`Media session capacity gate (${String(this.maxMediaSessions)}) reached`);
         }
         const { connection, binding } = this.requireLocatedBinding(agentId);
         const lane: AgentLane = {
