@@ -34,18 +34,11 @@ const dependencies =
               mapStorageAuthorization,
               onDegraded: (dependency, error) => console.error(`${dependency} degraded`, error),
           });
-const app = await buildApp({
-    adminToken,
-    connectorToken,
-    dependencies,
-    logger: true,
-    rateLimit: {
-        windowMs: readPositiveInteger("RATE_LIMIT_WINDOW_MS", 60_000),
-        adminRequests: readPositiveInteger("ADMIN_RATE_LIMIT", 120),
-        connectorRequests: readPositiveInteger("CONNECTOR_RATE_LIMIT", 30),
-    },
-});
 
+// Build the agent runtime supervisor (if enabled) before the app so its onClose
+// hook can be registered inside buildApp (which readies the instance). The hook
+// must be registered before ready(); passing it as an option satisfies that.
+let runtime: AgentRuntimeSupervisor | undefined;
 if (process.env.AGENT_RUNTIME_ENABLED === "true") {
     const brokerEndpoint = process.env.AGENT_IDENTITY_BROKER_URL;
     const identityToken = await readSecret("AGENT_IDENTITY_TOKEN", 32);
@@ -58,15 +51,30 @@ if (process.env.AGENT_RUNTIME_ENABLED === "true") {
     if (dependencies.connectorHub === undefined) {
         throw new Error("The Hermes Connector hub is required when the agent runtime is enabled");
     }
-    const runtime = new AgentRuntimeSupervisor(dependencies.service, dependencies.connectorHub, {
+    runtime = new AgentRuntimeSupervisor(dependencies.service, dependencies.connectorHub, {
         pusherWebSocketUrl: new URL(pusherWebSocketUrl),
         identityProvider: new AgentIdentityBrokerClient(new URL(brokerEndpoint), identityToken),
-        onError: (agentId, error) => app.log.error({ agentId, error }, "Hermes agent runtime error"),
+        onError: (agentId, error) => console.error({ agentId, error }, "Hermes agent runtime error"),
         maxActiveAgents: readPositiveInteger("AGENT_MAX_ACTIVE", 10),
     });
-    app.addHook("onClose", () => runtime.stop());
     await runtime.start();
 }
+
+const app = await buildApp({
+    adminToken,
+    connectorToken,
+    dependencies,
+    logger: true,
+    rateLimit: {
+        windowMs: readPositiveInteger("RATE_LIMIT_WINDOW_MS", 60_000),
+        adminRequests: readPositiveInteger("ADMIN_RATE_LIMIT", 120),
+        connectorRequests: readPositiveInteger("CONNECTOR_RATE_LIMIT", 30),
+    },
+    onClose: runtime
+        ? () => runtime.stop()
+        : undefined,
+});
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
         app.close()

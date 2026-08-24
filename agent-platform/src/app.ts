@@ -59,6 +59,8 @@ export interface BuildAppOptions {
     dependencies?: AppDependencies;
     logger?: boolean;
     rateLimit?: Partial<RateLimitPolicy>;
+    /** Hook invoked when the server closes. Registered before ready() so callers can pass lifecycle hooks. */
+    onClose?: () => void | Promise<void>;
 }
 
 export const createDefaultDependencies = (): AppDependencies => {
@@ -529,11 +531,13 @@ export const buildApp = async (options: BuildAppOptions): Promise<FastifyInstanc
         async () => dependencies.service.listHermesProfiles(),
     );
 
-    // Do NOT call app.ready() here. The Fastify instance must remain mutable so
-    // callers (e.g. server.ts) can still register hooks such as onClose before
-    // the server starts. app.listen() (and app.inject() in tests) readies the
-    // instance internally. Calling ready() here made the instance "started",
-    // which caused a deterministic FST_ERR_INSTANCE_ALREADY_LISTENING when
-    // server.ts later added the runtime onClose hook.
+    if (dependencies.close !== undefined) {
+        app.addHook("onClose", dependencies.close);
+    }
+    if (options.onClose !== undefined) {
+        app.addHook("onClose", options.onClose);
+    }
+
+    await app.ready();
     return app;
 };
