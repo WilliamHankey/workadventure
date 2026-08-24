@@ -57,7 +57,7 @@ export interface BuildAppOptions {
     logger?: boolean;
 }
 
-const defaultDependencies = (): AppDependencies => {
+export const createDefaultDependencies = (): AppDependencies => {
     const catalog = new MemoryHermesProfileCatalog();
     const service = new AdminService(
         new MemoryRegistryRepository(),
@@ -91,7 +91,7 @@ export const buildApp = async (options: BuildAppOptions): Promise<FastifyInstanc
         throw new Error("The administration token must contain at least 16 characters");
     }
 
-    const dependencies = options.dependencies ?? defaultDependencies();
+    const dependencies = options.dependencies ?? createDefaultDependencies();
     const app = Fastify({ logger: options.logger ?? false });
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);

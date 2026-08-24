@@ -88,6 +88,7 @@ describe("Hermes Connector control-plane hub", () => {
             }),
         );
         agentId = agent.id;
+        hub.registerToolCallHandler(agentId, () => Promise.resolve());
 
         app = await buildApp({ adminToken, connectorToken, dependencies });
         await app.listen({ host: "127.0.0.1", port: 0 });

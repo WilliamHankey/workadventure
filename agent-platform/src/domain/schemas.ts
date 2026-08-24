@@ -27,6 +27,7 @@ export const EntryPointSchema = z.object({
 export const CreateMapSchema = z.object({
     name: z.string().min(1).max(160),
     slug: SlugSchema,
+    roomUrl: z.url().nullable().default(null),
     description: z.string().max(1000).nullable().default(null),
     state: MapStateSchema.default("draft"),
     entryPoints: z.array(EntryPointSchema).default([]),

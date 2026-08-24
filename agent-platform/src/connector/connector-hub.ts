@@ -27,6 +27,9 @@ interface ConnectionState {
     bindings: Map<string, AgentBinding>;
 }
 
+type AgentToolCall = Extract<ClientMessage, { type: "tool.call" }>;
+type ToolCallHandler = (message: AgentToolCall) => Promise<void>;
+
 const messageBase = (): { messageId: string; sentAt: string } => ({
     messageId: randomUUID(),
     sentAt: new Date().toISOString(),
@@ -73,6 +76,7 @@ const rawDataToText = (data: WebSocket.RawData): string =>
 export class ConnectorHub {
     readonly receivedMessages: ClientMessage[] = [];
     private readonly connections = new Map<string, ConnectionState>();
+    private readonly toolCallHandlers = new Map<string, ToolCallHandler>();
 
     constructor(
         private readonly service: AdminService,
@@ -98,6 +102,18 @@ export class ConnectorHub {
                 }
             }
         });
+    }
+
+    registerToolCallHandler(agentId: string, handler: ToolCallHandler): () => void {
+        if (this.toolCallHandlers.has(agentId)) {
+            throw new Error(`A WorkAdventure runtime is already registered for agent '${agentId}'`);
+        }
+        this.toolCallHandlers.set(agentId, handler);
+        return () => {
+            if (this.toolCallHandlers.get(agentId) === handler) {
+                this.toolCallHandlers.delete(agentId);
+            }
+        };
     }
 
     async dispatchWorldEvent(
@@ -164,6 +180,13 @@ export class ConnectorHub {
             return connection.connectorId;
         }
         this.requireMessageLane(connection, message);
+        if (message.type === "tool.call") {
+            const handler = this.toolCallHandlers.get(message.lane.agentId);
+            if (handler === undefined) {
+                throw new Error(`No WorkAdventure runtime is registered for agent '${message.lane.agentId}'`);
+            }
+            await handler(message);
+        }
         return connection.connectorId;
     }
 

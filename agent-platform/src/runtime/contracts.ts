@@ -1,0 +1,41 @@
+import type { AvailabilityStatus, PositionMessage_Direction } from "@workadventure/messages";
+
+export interface AgentIdentityProvider {
+    issueToken(agentId: string, displayName: string): Promise<string>;
+}
+
+export interface RoomSocketHandlers {
+    open(): void;
+    message(payload: Uint8Array): void;
+    close(code: number, reason: string): void;
+    error(error: Error): void;
+}
+
+export interface RoomSocket {
+    send(payload: Uint8Array): void;
+    close(code: number, reason: string): void;
+}
+
+export type RoomSocketFactory = (url: string, protocols: string[], handlers: RoomSocketHandlers) => RoomSocket;
+
+export interface NearbyUser {
+    userId: number;
+    userUuid: string;
+    name: string;
+    x: number;
+    y: number;
+    direction: PositionMessage_Direction;
+    moving: boolean;
+    availabilityStatus: AvailabilityStatus;
+}
+
+export type AgentWorldEvent =
+    | { type: "user.joined"; user: NearbyUser }
+    | { type: "user.left"; user: NearbyUser }
+    | { type: "user.moved"; user: NearbyUser }
+    | { type: "user.said"; user: NearbyUser; text: string }
+    | { type: "user.emoted"; user: NearbyUser; emote: string }
+    | { type: "room.joined"; userId: number }
+    | { type: "connection.degraded"; reason: string };
+
+export type AgentWorldEventHandler = (event: AgentWorldEvent) => Promise<void>;

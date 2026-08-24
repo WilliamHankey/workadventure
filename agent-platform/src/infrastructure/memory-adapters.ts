@@ -54,6 +54,7 @@ export class MemoryRegistryRepository implements RegistryRepository {
             id,
             name: input.name,
             slug: input.slug,
+            roomUrl: input.roomUrl,
             description: input.description,
             state: input.state,
             entryPoints: clone(input.entryPoints),

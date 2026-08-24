@@ -27,6 +27,12 @@ export const EnvironmentVariables = z.object({
         "The URL to the admin dashboard. Will be used to redirect the user to the admin dashboard. You can put it a URL that will automatically connect the user.",
     ),
     ADMIN_API_TOKEN: z.string().optional().describe("Authentication token for the admin API"),
+    AGENT_IDENTITY_TOKEN: z
+        .string()
+        .optional()
+        .transform(emptyStringToUndefined)
+        .pipe(z.string().min(32).optional())
+        .describe("Bearer token that enables the internal short-lived Hermes agent identity endpoint"),
     AUTOLOGIN_URL: AbsoluteOrRelativeUrl.optional().describe(
         "The URL to be used to automatically log someone given a token.",
     ),

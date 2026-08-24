@@ -4,6 +4,7 @@ CREATE TABLE agent_platform_maps (
     id uuid PRIMARY KEY,
     name text NOT NULL,
     slug text NOT NULL UNIQUE,
+    room_url text,
     description text,
     state text NOT NULL CHECK (state IN ('draft', 'published', 'archived')),
     entry_points jsonb NOT NULL DEFAULT '[]'::jsonb,
