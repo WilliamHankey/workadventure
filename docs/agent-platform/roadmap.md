@@ -78,13 +78,15 @@ Status: code-complete and CI-accepted on 24 August 2026; real LiveKit video rema
 
 ## Phase 8 — Browser compatibility
 
-Status: active.
+Status: code-complete and CI-accepted on 24 August 2026; deployment remains disabled until the private identity-handoff pilot ([issue #10](https://github.com/WilliamHankey/workadventure/issues/10)).
 
 - On-demand Playwright pool
 - Supported Scripting API tools for missing parity
 - Strict permission and resource limits
 
 ## Phase 9 — Production hardening
+
+Status: active ([issue #11](https://github.com/WilliamHankey/workadventure/issues/11)).
 
 - Deployment, backups, monitoring, upgrades, incident recovery
 - Resource gates and private pilot
