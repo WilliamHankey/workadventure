@@ -13,4 +13,4 @@ npm run start --workspace=@workadventure/agent-platform
 
 OpenAPI is available at `/documentation`. Mutating requests require `Idempotency-Key`; updates and deletes also require `If-Match` with the current resource version.
 
-The default boot path uses in-memory adapters for the Phase 1 contract slice. `migrations/0001_agent_platform.sql` defines the durable PostgreSQL model, including an outbox restricted to definition-change events.
+The default boot path uses in-memory adapters for the Phase 1 contract slice. `migrations/0001_agent_platform.sql` defines the durable PostgreSQL model, including an outbox restricted to definition-change events. `RedisDesiredStatePublisher` provides the internal event adapter; its typed input permits only `agent.definition.changed` and `agent.definition.deleted` events.

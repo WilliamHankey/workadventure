@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { z } from "zod/v4";
 
 import { buildApp, type AppDependencies } from "../src/app";
 import { ErrorResponseSchema, MapRecordSchema } from "../src/domain/schemas";
@@ -8,6 +9,7 @@ import {
     MemoryRegistryRepository,
     StaticHermesProfileCatalog,
 } from "../src/infrastructure/memory-adapters";
+import { RedisDesiredStatePublisher } from "../src/infrastructure/redis-desired-state-publisher";
 import { AdminService } from "../src/services/admin-service";
 import { MemoryIdempotencyStore } from "../src/services/idempotency-store";
 
@@ -125,6 +127,69 @@ describe("Lowcoder administration API", () => {
         expect(audit.events.some((event) => event.action === "agent.create")).toBe(true);
     });
 
+    it("completes the agent and map CRUD lifecycle", async () => {
+        const mapResponse = await app.inject({
+            method: "POST",
+            url: "/api/v1/maps",
+            headers: { ...authHeaders, "idempotency-key": "create-map-0004" },
+            payload: { name: "Lifecycle World", slug: "lifecycle-world" },
+        });
+        const map = MapRecordSchema.parse(mapResponse.json());
+        const readMap = await app.inject({ method: "GET", url: `/api/v1/maps/${map.id}`, headers: authHeaders });
+        expect(readMap.statusCode).toBe(200);
+
+        const agentResponse = await app.inject({
+            method: "POST",
+            url: "/api/v1/agents",
+            headers: { ...authHeaders, "idempotency-key": "create-agent-0002" },
+            payload: {
+                displayName: "Lifecycle Agent",
+                hermesProfileId: "lifecycle-profile",
+                modelId: "hermes-model",
+                mapId: map.id,
+                spawnPoint: "start",
+                ownerWorkAdventureUuid: "owner-1",
+                wokaTextureIds: ["body-1"],
+                voiceId: "voice-1",
+                permissions: {},
+            },
+        });
+        const agentId = z.object({ id: z.string(), version: z.number() }).parse(agentResponse.json()).id;
+        const readAgent = await app.inject({
+            method: "GET",
+            url: `/api/v1/agents/${agentId}`,
+            headers: authHeaders,
+        });
+        expect(readAgent.statusCode).toBe(200);
+
+        const updateAgent = await app.inject({
+            method: "PATCH",
+            url: `/api/v1/agents/${agentId}`,
+            headers: { ...authHeaders, "idempotency-key": "update-agent-0002", "if-match": "1" },
+            payload: { enabled: true },
+        });
+        expect(updateAgent.statusCode).toBe(200);
+        expect(updateAgent.json()).toMatchObject({ enabled: true, version: 2, controlMode: "hermes" });
+
+        const deleteAgent = await app.inject({
+            method: "DELETE",
+            url: `/api/v1/agents/${agentId}`,
+            headers: { ...authHeaders, "idempotency-key": "delete-agent-0002", "if-match": "2" },
+        });
+        expect(deleteAgent.statusCode).toBe(204);
+
+        const deleteMap = await app.inject({
+            method: "DELETE",
+            url: `/api/v1/maps/${map.id}`,
+            headers: { ...authHeaders, "idempotency-key": "delete-map-0004", "if-match": "1" },
+        });
+        expect(deleteMap.statusCode).toBe(204);
+        expect(desiredState.events.slice(-2).map((event) => event.type)).toEqual([
+            "agent.definition.changed",
+            "agent.definition.deleted",
+        ]);
+    });
+
     it("rejects Lowcoder control mode and exposes no operational command routes", async () => {
         const mapResponse = await app.inject({
             method: "POST",
@@ -183,5 +248,26 @@ describe("Lowcoder administration API", () => {
 
         expect(response.statusCode).toBe(200);
         expect(response.json()).toMatchObject([{ id: "researcher", readiness: true }]);
+    });
+
+    it("publishes only typed desired-state definitions through the Redis adapter", async () => {
+        const messages: Array<{ channel: string; message: string }> = [];
+        const publisher = new RedisDesiredStatePublisher({
+            publish(channel, message) {
+                messages.push({ channel, message });
+                return Promise.resolve(1);
+            },
+        });
+
+        await publisher.publish({
+            type: "agent.definition.changed",
+            agentId: "agent-1",
+            definitionVersion: 4,
+            occurredAt: new Date().toISOString(),
+        });
+
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({ channel: "agent-platform:desired-state" });
+        expect(messages[0]?.message).toContain('"type":"agent.definition.changed"');
     });
 });
