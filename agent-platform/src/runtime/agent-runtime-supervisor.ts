@@ -7,8 +7,10 @@ import type { ConnectorHub } from "../connector/connector-hub";
 import type { AgentRecord, MapRecord } from "../domain/schemas";
 import type { AdminService } from "../services/admin-service";
 import type { AgentIdentityProvider, AgentWorldEvent, RoomSocketFactory } from "./contracts";
+import { NavigationGraphCache } from "./navigation-graph";
 import {
     type AgentAvailabilityName,
+    type NavigationOutcome,
     WorkAdventureRoomClient,
     type WorkAdventureRoomClientOptions,
 } from "./workadventure-room-client";
@@ -21,8 +23,14 @@ interface AgentRoomClient {
     say(text: string): void;
     setStatus(status: AgentAvailabilityName): void;
     emote(emote: string): void;
+    moveTo(x: number, y: number, actionId: string): Promise<NavigationOutcome>;
+    moveToArea(areaName: string, actionId: string): Promise<NavigationOutcome>;
+    approachUser(userUuid: string, distance: number, actionId: string): Promise<NavigationOutcome>;
+    followUser(userUuid: string, distance: number, actionId: string): Promise<NavigationOutcome>;
+    stopMoving(actionId: string): NavigationOutcome;
     getSelfState(): Record<string, unknown>;
     getNearbyUsers(): unknown[];
+    getMapAreas(): unknown[];
 }
 
 type AgentRoomClientFactory = (options: WorkAdventureRoomClientOptions) => AgentRoomClient;
@@ -41,6 +49,7 @@ export interface AgentRuntimeSupervisorOptions {
     reconcileIntervalMs?: number;
     socketFactory?: RoomSocketFactory;
     roomClientFactory?: AgentRoomClientFactory;
+    navigationGraphCache?: NavigationGraphCache;
     onError?: (agentId: string, error: Error) => void;
 }
 
@@ -49,6 +58,13 @@ const EmoteArgumentsSchema = z.object({ emote: z.string().min(1).max(128) });
 const StatusArgumentsSchema = z.object({
     status: z.enum(["online", "silent", "away", "busy", "do_not_disturb", "back_in_a_moment"]),
 });
+const MoveArgumentsSchema = z.object({ x: z.number().finite(), y: z.number().finite() });
+const MoveToAreaArgumentsSchema = z.object({ areaName: z.string().min(1).max(255) });
+const UserMovementArgumentsSchema = z.object({
+    userUuid: z.string().min(1).max(255).optional(),
+    distance: z.number().finite().min(16).max(512).default(64),
+});
+const StopArgumentsSchema = z.object({}).passthrough();
 
 const stableId = (prefix: string, ...parts: string[]): string =>
     `${prefix}-${createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 32)}`;
@@ -58,6 +74,7 @@ const normalizeError = (error: unknown): Error => (error instanceof Error ? erro
 export class AgentRuntimeSupervisor {
     private readonly activeAgents = new Map<string, ActiveAgent>();
     private readonly roomClientFactory: AgentRoomClientFactory;
+    private readonly navigationGraphCache: NavigationGraphCache;
     private reconcileTimer: ReturnType<typeof setInterval> | undefined;
 
     public constructor(
@@ -67,6 +84,7 @@ export class AgentRuntimeSupervisor {
     ) {
         this.roomClientFactory =
             options.roomClientFactory ?? ((roomOptions) => new WorkAdventureRoomClient(roomOptions));
+        this.navigationGraphCache = options.navigationGraphCache ?? new NavigationGraphCache();
     }
 
     async start(): Promise<void> {
@@ -140,6 +158,10 @@ export class AgentRuntimeSupervisor {
         }
 
         try {
+            const navigationGraph = await this.service
+                .getMapContent(map.id)
+                .then((content) => this.navigationGraphCache.get(map, content))
+                .catch(() => undefined);
             const token = await this.options.identityProvider.issueToken(agent.id, agent.displayName);
             const client = this.roomClientFactory({
                 agentId: agent.id,
@@ -151,6 +173,8 @@ export class AgentRuntimeSupervisor {
                 textureIds: agent.wokaTextureIds,
                 companionTextureId: agent.companionTextureId,
                 spawn: { x: spawn.x, y: spawn.y },
+                ownerWorkAdventureUuid: agent.ownerWorkAdventureUuid,
+                navigationGraph,
                 onEvent: (event) => this.handleWorldEvent(agent, event),
                 socketFactory: this.options.socketFactory,
             });
@@ -165,6 +189,31 @@ export class AgentRuntimeSupervisor {
     }
 
     private async handleWorldEvent(agent: AgentRecord, event: AgentWorldEvent): Promise<void> {
+        if (
+            event.type === "navigation.completed" ||
+            event.type === "navigation.failed" ||
+            event.type === "navigation.cancelled"
+        ) {
+            await this.connectorHub.dispatchWorldEvent(
+                agent.id,
+                stableId("wa-session", agent.id, "navigation"),
+                {
+                    kind: event.type.replace(".", "_") as
+                        | "navigation_completed"
+                        | "navigation_failed"
+                        | "navigation_cancelled",
+                    occurredAt: new Date().toISOString(),
+                    conversationId: stableId("wa-conversation", agent.id, "navigation"),
+                    payload: {
+                        actionId: event.actionId,
+                        target: event.target,
+                        ...(event.reason === undefined ? {} : { reason: event.reason }),
+                    },
+                },
+                agent.behaviorInstructions,
+            );
+            return;
+        }
         if (event.type !== "user.said" && event.type !== "user.joined" && event.type !== "user.left") {
             return;
         }
@@ -202,6 +251,7 @@ export class AgentRuntimeSupervisor {
                     userId: event.user.userId,
                     userUuid: event.user.userUuid,
                     name: event.user.name,
+                    owner: event.user.userUuid === agent.ownerWorkAdventureUuid,
                 },
             },
             agent.behaviorInstructions,
@@ -214,7 +264,7 @@ export class AgentRuntimeSupervisor {
         client: AgentRoomClient,
         message: AgentToolCall,
     ): Promise<void> {
-        let outcome: "succeeded" | "failed" | "rejected" = "succeeded";
+        let outcome: "succeeded" | "failed" | "rejected" | "cancelled" = "succeeded";
         let result: Record<string, unknown>;
         try {
             switch (message.name) {
@@ -245,16 +295,58 @@ export class AgentRuntimeSupervisor {
                     break;
                 }
                 case "wa_get_world_context": {
-                    result = { mapId: map.id, roomUrl: map.roomUrl, roomName: map.name };
+                    result = {
+                        mapId: map.id,
+                        roomUrl: map.roomUrl,
+                        roomName: map.name,
+                        ownerWorkAdventureUuid: agent.ownerWorkAdventureUuid,
+                    };
                     break;
                 }
                 case "wa_get_map_areas": {
-                    result = { entryPoints: map.entryPoints };
+                    result = { areas: client.getMapAreas(), entryPoints: map.entryPoints };
+                    break;
+                }
+                case "wa_move_to": {
+                    const arguments_ = MoveArgumentsSchema.parse(message.arguments);
+                    const navigation = await client.moveTo(arguments_.x, arguments_.y, message.toolCallId);
+                    ({ outcome, result } = this.navigationResult(navigation));
+                    break;
+                }
+                case "wa_move_to_area": {
+                    const arguments_ = MoveToAreaArgumentsSchema.parse(message.arguments);
+                    const navigation = await client.moveToArea(arguments_.areaName, message.toolCallId);
+                    ({ outcome, result } = this.navigationResult(navigation));
+                    break;
+                }
+                case "wa_approach_user": {
+                    const arguments_ = UserMovementArgumentsSchema.parse(message.arguments);
+                    const navigation = await client.approachUser(
+                        arguments_.userUuid ?? agent.ownerWorkAdventureUuid,
+                        arguments_.distance,
+                        message.toolCallId,
+                    );
+                    ({ outcome, result } = this.navigationResult(navigation));
+                    break;
+                }
+                case "wa_follow_user": {
+                    const arguments_ = UserMovementArgumentsSchema.parse(message.arguments);
+                    const navigation = await client.followUser(
+                        arguments_.userUuid ?? agent.ownerWorkAdventureUuid,
+                        arguments_.distance,
+                        message.toolCallId,
+                    );
+                    ({ outcome, result } = this.navigationResult(navigation));
+                    break;
+                }
+                case "wa_stop_moving": {
+                    StopArgumentsSchema.parse(message.arguments);
+                    ({ outcome, result } = this.navigationResult(client.stopMoving(message.toolCallId)));
                     break;
                 }
                 default: {
                     outcome = "rejected";
-                    result = { code: "tool_not_available_in_phase_3", tool: message.name };
+                    result = { code: "tool_not_available", tool: message.name };
                 }
             }
         } catch (error: unknown) {
@@ -273,6 +365,21 @@ export class AgentRuntimeSupervisor {
             outcome,
             result,
         });
+    }
+
+    private navigationResult(navigation: NavigationOutcome): {
+        outcome: "succeeded" | "failed" | "cancelled";
+        result: Record<string, unknown>;
+    } {
+        return {
+            outcome:
+                navigation.status === "completed"
+                    ? "succeeded"
+                    : navigation.status === "cancelled"
+                      ? "cancelled"
+                      : "failed",
+            result: { navigation },
+        };
     }
 
     private reportError(agentId: string, error: Error): void {

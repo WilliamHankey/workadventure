@@ -36,6 +36,12 @@ export type AgentWorldEvent =
     | { type: "user.said"; user: NearbyUser; text: string }
     | { type: "user.emoted"; user: NearbyUser; emote: string }
     | { type: "room.joined"; userId: number }
+    | {
+          type: "navigation.completed" | "navigation.failed" | "navigation.cancelled";
+          actionId: string;
+          target: { x: number; y: number };
+          reason?: string;
+      }
     | { type: "connection.degraded"; reason: string };
 
 export type AgentWorldEventHandler = (event: AgentWorldEvent) => Promise<void>;

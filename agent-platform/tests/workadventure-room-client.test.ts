@@ -3,11 +3,13 @@ import {
     FrontToPusherWebSocketMessage,
     PositionMessage_Direction,
     PusherToFrontWebSocketMessage,
+    RoomJoinedMessage,
     type ServerToClientMessage,
 } from "@workadventure/messages";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentWorldEvent, RoomSocket, RoomSocketFactory, RoomSocketHandlers } from "../src/runtime/contracts";
+import { parseTiledNavigationGraph } from "../src/runtime/navigation-graph";
 import { WorkAdventureRoomClient } from "../src/runtime/workadventure-room-client";
 
 class FakeRoomSocket implements RoomSocket {
@@ -45,7 +47,7 @@ const requireItem = <Value>(value: Value | undefined, description: string): Valu
 
 const decodeClientFrame = (payload: Uint8Array) => FrontToPusherWebSocketMessage.decode(payload);
 
-const userJoinedBatch = (sayMessage?: string): ServerToClientMessage => ({
+const userJoinedBatch = (sayMessage?: string, x = 120, y = 220): ServerToClientMessage => ({
     message: {
         $case: "batchMessage",
         batchMessage: {
@@ -59,8 +61,8 @@ const userJoinedBatch = (sayMessage?: string): ServerToClientMessage => ({
                             name: "William",
                             characterTextures: [],
                             position: {
-                                x: 120,
-                                y: 220,
+                                x,
+                                y,
                                 direction: PositionMessage_Direction.LEFT,
                                 moving: false,
                             },
@@ -73,6 +75,31 @@ const userJoinedBatch = (sayMessage?: string): ServerToClientMessage => ({
                             variables: {},
                             chatID: "human-chat",
                             sayMessage: sayMessage === undefined ? undefined : { message: sayMessage, type: 0 },
+                        },
+                    },
+                },
+            ],
+        },
+    },
+});
+
+const userMovedBatch = (x: number, y: number): ServerToClientMessage => ({
+    message: {
+        $case: "batchMessage",
+        batchMessage: {
+            event: "",
+            payload: [
+                {
+                    message: {
+                        $case: "userMovedMessage",
+                        userMovedMessage: {
+                            userId: 42,
+                            position: {
+                                x,
+                                y,
+                                direction: PositionMessage_Direction.RIGHT,
+                                moving: true,
+                            },
                         },
                     },
                 },
@@ -103,6 +130,7 @@ describe("headless WorkAdventure room client", () => {
             textureIds: ["body-1", "eyes-2"],
             companionTextureId: "companion-1",
             spawn: { x: 64, y: 96 },
+            ownerWorkAdventureUuid: "owner-1",
             onEvent: () => Promise.resolve(),
             socketFactory,
         });
@@ -166,6 +194,7 @@ describe("headless WorkAdventure room client", () => {
             textureIds: ["body-1"],
             companionTextureId: null,
             spawn: { x: 10, y: 20 },
+            ownerWorkAdventureUuid: "owner-1",
             onEvent: (event) => {
                 events.push(event);
                 return Promise.resolve();
@@ -201,6 +230,177 @@ describe("headless WorkAdventure room client", () => {
         expect(new URL(requireItem(urls.at(1), "reconnect URL")).searchParams.get("lastReceivedNonce")).toBe("2");
         secondSocket.open();
         expect(secondSocket.sent.map((payload) => decodeClientFrame(payload).nonce)).toEqual([1, 2]);
+        client.stop();
+        vi.useRealTimers();
+    });
+
+    it("emits collision-aware movement frames and a typed completion observation", async () => {
+        vi.useFakeTimers();
+        const sockets: FakeRoomSocket[] = [];
+        const events: AgentWorldEvent[] = [];
+        const socketFactory: RoomSocketFactory = (_url, _protocols, handlers) => {
+            const socket = new FakeRoomSocket(handlers);
+            sockets.push(socket);
+            return socket;
+        };
+        const navigationGraph = parseTiledNavigationGraph({
+            orientation: "orthogonal",
+            width: 3,
+            height: 1,
+            tilewidth: 32,
+            tileheight: 32,
+            tilesets: [],
+            layers: [{ type: "tilelayer", width: 3, height: 1, data: [0, 0, 0] }],
+        });
+        const client = new WorkAdventureRoomClient({
+            agentId: "agent-moving",
+            token: "signed-token",
+            pusherWebSocketUrl: new URL("ws://play.example/ws/room"),
+            roomUrl: "https://play.example/_/global/maps.example/office.tmj",
+            roomName: "Agent Office",
+            displayName: "Moving Agent",
+            textureIds: ["body-1"],
+            companionTextureId: null,
+            spawn: { x: 16, y: 16 },
+            ownerWorkAdventureUuid: "owner-1",
+            navigationGraph,
+            movementStepMs: 10,
+            onEvent: (event) => {
+                events.push(event);
+                return Promise.resolve();
+            },
+            socketFactory,
+        });
+
+        client.start();
+        const socket = requireItem(sockets.at(0), "movement socket");
+        socket.open();
+        const resultPromise = client.moveTo(80, 16, "move-1");
+        await vi.runAllTimersAsync();
+        const result = await resultPromise;
+        const movementFrames = socket.sent
+            .map(decodeClientFrame)
+            .filter((frame) => frame.message?.message?.$case === "userMovesMessage");
+
+        expect(result).toEqual({ actionId: "move-1", status: "completed", target: { x: 80, y: 16 } });
+        expect(movementFrames.map((frame) => frame.message?.message)).toMatchObject([
+            { userMovesMessage: { position: { x: 48, y: 16, moving: true } } },
+            { userMovesMessage: { position: { x: 80, y: 16, moving: true } } },
+            { userMovesMessage: { position: { x: 80, y: 16, moving: false } } },
+        ]);
+        expect(events).toContainEqual({
+            type: "navigation.completed",
+            actionId: "move-1",
+            target: { x: 80, y: 16 },
+        });
+        client.stop();
+        vi.useRealTimers();
+    });
+
+    it("cancels an in-flight route immediately when Hermes stops movement", async () => {
+        vi.useFakeTimers();
+        const sockets: FakeRoomSocket[] = [];
+        const socketFactory: RoomSocketFactory = (_url, _protocols, handlers) => {
+            const socket = new FakeRoomSocket(handlers);
+            sockets.push(socket);
+            return socket;
+        };
+        const navigationGraph = parseTiledNavigationGraph({
+            orientation: "orthogonal",
+            width: 5,
+            height: 1,
+            tilewidth: 32,
+            tileheight: 32,
+            tilesets: [],
+            layers: [{ type: "tilelayer", width: 5, height: 1, data: [0, 0, 0, 0, 0] }],
+        });
+        const client = new WorkAdventureRoomClient({
+            agentId: "agent-stopping",
+            token: "signed-token",
+            pusherWebSocketUrl: new URL("ws://play.example/ws/room"),
+            roomUrl: "https://play.example/_/global/maps.example/office.tmj",
+            roomName: "Agent Office",
+            displayName: "Stopping Agent",
+            textureIds: ["body-1"],
+            companionTextureId: null,
+            spawn: { x: 16, y: 16 },
+            ownerWorkAdventureUuid: "owner-1",
+            navigationGraph,
+            movementStepMs: 1_000,
+            onEvent: () => Promise.resolve(),
+            socketFactory,
+        });
+
+        client.start();
+        requireItem(sockets.at(0), "stop socket").open();
+        const movement = client.moveTo(144, 16, "move-long");
+        const stop = client.stopMoving("stop-1");
+        await vi.runAllTimersAsync();
+
+        await expect(movement).resolves.toMatchObject({ actionId: "move-long", status: "cancelled" });
+        expect(stop).toMatchObject({ actionId: "stop-1", status: "cancelled", reason: "stopped_by_hermes" });
+        client.stop();
+        vi.useRealTimers();
+    });
+
+    it("keeps owner-follow binding across socket reconnect and replans after owner movement", async () => {
+        vi.useFakeTimers();
+        const sockets: FakeRoomSocket[] = [];
+        const socketFactory: RoomSocketFactory = (_url, _protocols, handlers) => {
+            const socket = new FakeRoomSocket(handlers);
+            sockets.push(socket);
+            return socket;
+        };
+        const navigationGraph = parseTiledNavigationGraph({
+            orientation: "orthogonal",
+            width: 6,
+            height: 1,
+            tilewidth: 32,
+            tileheight: 32,
+            tilesets: [],
+            layers: [{ type: "tilelayer", width: 6, height: 1, data: [0, 0, 0, 0, 0, 0] }],
+        });
+        const client = new WorkAdventureRoomClient({
+            agentId: "agent-following",
+            token: "signed-token",
+            pusherWebSocketUrl: new URL("ws://play.example/ws/room"),
+            roomUrl: "https://play.example/_/global/maps.example/office.tmj",
+            roomName: "Agent Office",
+            displayName: "Following Agent",
+            textureIds: ["body-1"],
+            companionTextureId: null,
+            spawn: { x: 16, y: 16 },
+            ownerWorkAdventureUuid: "owner-1",
+            navigationGraph,
+            movementStepMs: 10,
+            reconnectDelayMs: 1,
+            onEvent: () => Promise.resolve(),
+            socketFactory,
+        });
+
+        client.start();
+        const firstSocket = requireItem(sockets.at(0), "first follow socket");
+        firstSocket.open();
+        firstSocket.receive(1, userJoinedBatch(undefined, 80, 16));
+        const initialFollow = client.followUser("owner-1", 32, "follow-owner");
+        await vi.runAllTimersAsync();
+        await expect(initialFollow).resolves.toMatchObject({ status: "completed" });
+        expect(client.getSelfState()).toMatchObject({ followingUserUuid: "owner-1", x: 48, y: 16 });
+
+        firstSocket.disconnect();
+        await vi.advanceTimersByTimeAsync(1);
+        const secondSocket = requireItem(sockets.at(1), "second follow socket");
+        secondSocket.open();
+        secondSocket.receive(2, {
+            message: {
+                $case: "roomJoinedMessage",
+                roomJoinedMessage: RoomJoinedMessage.fromPartial({ currentUserId: 9 }),
+            },
+        });
+        secondSocket.receive(3, userMovedBatch(144, 16));
+        await vi.runAllTimersAsync();
+
+        expect(client.getSelfState()).toMatchObject({ followingUserUuid: "owner-1", x: 112, y: 16 });
         client.stop();
         vi.useRealTimers();
     });

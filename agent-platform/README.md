@@ -40,3 +40,14 @@ Every enabled agent requires a map with a full `roomUrl` and a matching `spawnPo
 ```
 
 On reconciliation the runtime creates exactly one room client per enabled definition, joins with that definition's name and Woka textures, tracks nearby users, and forwards speech events only to the immutable Hermes lane bound to that agent. Live `wa_say`, `wa_set_status`, and `wa_emote` actions enter through that authenticated lane; Lowcoder has no operational action endpoint.
+
+## Enable collision-aware navigation
+
+Store the map's TMJ document through `PUT /api/v1/maps/{mapId}/content` with `format: "tmj"`. The parser reads orthogonal, finite, uncompressed tile layers, inline tiles whose boolean `collides` property is `true`, WorkAdventure `area` objects, and the map record's entry points. It fails closed for external TSJ, compressed, chunked, infinite, or non-orthogonal maps instead of guessing that unknown tiles are walkable. The standard `workadventure-agent-world` starter TMJ embeds its tilesets and is directly supported.
+
+For `format: "wam"`, the runtime combines WAM areas with either:
+
+- the WAM's absolute/relative `mapUrl`, loaded with a five-second timeout and an 8 MiB limit; or
+- an administrator-supplied `tiledMap` snapshot inside the WAM document, which avoids a runtime fetch.
+
+Hermes may call `wa_move_to`, `wa_move_to_area`, `wa_approach_user`, `wa_follow_user`, and `wa_stop_moving` only when the immutable binding includes movement permission. Approach/follow defaults to `ownerWorkAdventureUuid`; movement uses bounded A*, emits current WorkAdventure movement/viewport frames, and returns completed, failed, or cancelled outcomes to the originating lane. Follow state survives ordinary room-socket reconnects. Lowcoder still has no movement or general command route.

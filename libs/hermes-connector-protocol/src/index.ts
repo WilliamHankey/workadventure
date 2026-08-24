@@ -70,6 +70,7 @@ export const WorldEventSchema = z.object({
         "meeting_left",
         "navigation_completed",
         "navigation_failed",
+        "navigation_cancelled",
         "timer",
     ]),
     occurredAt: TimestampSchema,
@@ -167,7 +168,7 @@ export const ToolResultSchema = MessageBaseSchema.extend({
     eventId: IdSchema,
     hermesRunId: IdSchema,
     toolCallId: IdSchema,
-    outcome: z.enum(["succeeded", "failed", "rejected"]),
+    outcome: z.enum(["succeeded", "failed", "rejected", "cancelled"]),
     result: z.record(z.string(), z.unknown()),
 });
 

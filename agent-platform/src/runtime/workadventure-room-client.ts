@@ -19,6 +19,7 @@ import type {
     RoomSocketFactory,
     RoomSocketHandlers,
 } from "./contracts";
+import type { NavigationGraph, PixelPoint } from "./navigation-graph";
 import { createWsRoomSocket } from "./ws-room-socket";
 
 export interface WorkAdventureRoomClientOptions {
@@ -31,9 +32,13 @@ export interface WorkAdventureRoomClientOptions {
     textureIds: string[];
     companionTextureId: string | null;
     spawn: { x: number; y: number };
+    ownerWorkAdventureUuid: string;
+    navigationGraph?: NavigationGraph;
     onEvent: AgentWorldEventHandler;
     socketFactory?: RoomSocketFactory;
     reconnectDelayMs?: number;
+    movementStepMs?: number;
+    movementTimeoutMs?: number;
 }
 
 interface StoredFrame {
@@ -54,6 +59,24 @@ const statusByName = {
 
 export type AgentAvailabilityName = keyof typeof statusByName;
 
+export interface NavigationOutcome {
+    actionId: string;
+    status: "completed" | "failed" | "cancelled";
+    target: PixelPoint;
+    reason?: string;
+}
+
+interface ActiveMovement {
+    actionId: string;
+    cancelled: boolean;
+}
+
+interface FollowTarget {
+    actionId: string;
+    userUuid: string;
+    distance: number;
+}
+
 export class WorkAdventureRoomClient {
     private readonly users = new Map<number, NearbyUser>();
     private readonly outgoingFrames = new Map<number, StoredFrame>();
@@ -65,9 +88,15 @@ export class WorkAdventureRoomClient {
     private nextOutgoingNonce = 1;
     private lastReceivedNonce = 0;
     private currentUserId: number | undefined;
+    private position: PixelPoint;
+    private direction = PositionMessage_Direction.DOWN;
+    private activeMovement: ActiveMovement | undefined;
+    private followTarget: FollowTarget | undefined;
+    private followRevision = 0;
 
     public constructor(private readonly options: WorkAdventureRoomClientOptions) {
         this.socketFactory = options.socketFactory ?? createWsRoomSocket;
+        this.position = { ...options.spawn };
     }
 
     start(): void {
@@ -113,19 +142,71 @@ export class WorkAdventureRoomClient {
         this.send({ message: { $case: "emotePromptMessage", emotePromptMessage: { emote } } });
     }
 
+    moveTo(x: number, y: number, actionId: string): Promise<NavigationOutcome> {
+        return this.navigate({ x, y }, actionId);
+    }
+
+    moveToArea(areaName: string, actionId: string): Promise<NavigationOutcome> {
+        const graph = this.requireNavigationGraph();
+        return this.navigate(graph.targetForArea(areaName, this.position), actionId);
+    }
+
+    approachUser(userUuid: string, distance: number, actionId: string): Promise<NavigationOutcome> {
+        return this.navigate(this.approachTarget(userUuid, distance), actionId);
+    }
+
+    async followUser(userUuid: string, distance: number, actionId: string): Promise<NavigationOutcome> {
+        this.followTarget = { userUuid, distance, actionId };
+        const result = await this.navigate(this.approachTarget(userUuid, distance), actionId, true);
+        if (result.status === "failed" && this.followTarget?.actionId === actionId) {
+            this.followTarget = undefined;
+        }
+        return result;
+    }
+
+    stopMoving(actionId: string): NavigationOutcome {
+        const hadFollowTarget = this.followTarget !== undefined;
+        this.followTarget = undefined;
+        if (this.activeMovement !== undefined) {
+            this.activeMovement.cancelled = true;
+            if (this.socket !== undefined) {
+                this.sendPosition(this.position, false);
+            }
+        }
+        const result: NavigationOutcome = {
+            actionId,
+            status: hadFollowTarget || this.activeMovement !== undefined ? "cancelled" : "completed",
+            target: { ...this.position },
+            reason: hadFollowTarget || this.activeMovement !== undefined ? "stopped_by_hermes" : "already_stopped",
+        };
+        if (this.activeMovement === undefined && result.status === "cancelled") {
+            this.emitNavigation(result);
+        }
+        return result;
+    }
+
     getSelfState(): Record<string, unknown> {
         return {
             agentId: this.options.agentId,
             userId: this.currentUserId ?? null,
             roomUrl: this.options.roomUrl,
             connected: this.socket !== undefined,
-            x: this.options.spawn.x,
-            y: this.options.spawn.y,
+            x: this.position.x,
+            y: this.position.y,
+            direction: this.direction,
+            moving: this.activeMovement !== undefined,
+            followingUserUuid: this.followTarget?.userUuid ?? null,
+            ownerWorkAdventureUuid: this.options.ownerWorkAdventureUuid,
+            owner: this.ownerState(),
         };
     }
 
     getNearbyUsers(): NearbyUser[] {
         return [...this.users.values()].map((user) => structuredClone(user));
+    }
+
+    getMapAreas(): unknown[] {
+        return this.options.navigationGraph?.listAreas() ?? [];
     }
 
     private connect(): void {
@@ -222,6 +303,7 @@ export class WorkAdventureRoomClient {
         if (inner.$case === "roomJoinedMessage") {
             this.currentUserId = inner.roomJoinedMessage.currentUserId;
             this.emit({ type: "room.joined", userId: inner.roomJoinedMessage.currentUserId });
+            this.continueFollowing();
             return;
         }
         if (inner.$case === "batchMessage") {
@@ -249,6 +331,7 @@ export class WorkAdventureRoomClient {
                 const user = this.userFromJoined(message.userJoinedMessage);
                 this.users.set(user.userId, user);
                 this.emit({ type: "user.joined", user });
+                this.continueFollowing(user.userUuid);
                 if (message.userJoinedMessage.sayMessage?.message) {
                     this.emit({ type: "user.said", user, text: message.userJoinedMessage.sayMessage.message });
                 }
@@ -269,6 +352,7 @@ export class WorkAdventureRoomClient {
                     const user = { ...current, ...position };
                     this.users.set(user.userId, user);
                     this.emit({ type: "user.moved", user });
+                    this.continueFollowing(user.userUuid);
                 }
                 break;
             }
@@ -320,6 +404,147 @@ export class WorkAdventureRoomClient {
             moving: position.moving,
             availabilityStatus: message.availabilityStatus,
         };
+    }
+
+    private requireNavigationGraph(): NavigationGraph {
+        if (this.options.navigationGraph === undefined) {
+            throw new Error("No validated navigation graph is available for this map");
+        }
+        return this.options.navigationGraph;
+    }
+
+    private ownerState(): NearbyUser | null {
+        const owner = [...this.users.values()].find(
+            (candidate) => candidate.userUuid === this.options.ownerWorkAdventureUuid,
+        );
+        return owner === undefined ? null : structuredClone(owner);
+    }
+
+    private userByUuid(userUuid: string): NearbyUser {
+        const user = [...this.users.values()].find((candidate) => candidate.userUuid === userUuid);
+        if (user === undefined) {
+            throw new Error(`User '${userUuid}' is not present in this room`);
+        }
+        return user;
+    }
+
+    private approachTarget(userUuid: string, distance: number): PixelPoint {
+        const user = this.userByUuid(userUuid);
+        const deltaX = this.position.x - user.x;
+        const deltaY = this.position.y - user.y;
+        const currentDistance = Math.hypot(deltaX, deltaY);
+        if (currentDistance <= distance) {
+            return { ...this.position };
+        }
+        const ratio = distance / currentDistance;
+        return { x: user.x + deltaX * ratio, y: user.y + deltaY * ratio };
+    }
+
+    private async navigate(target: PixelPoint, actionId: string, preserveFollow = false): Promise<NavigationOutcome> {
+        const graph = this.requireNavigationGraph();
+        if (!preserveFollow) {
+            this.followTarget = undefined;
+        }
+        if (this.activeMovement !== undefined) {
+            this.activeMovement.cancelled = true;
+        }
+        const movement: ActiveMovement = { actionId, cancelled: false };
+        this.activeMovement = movement;
+        const startedAt = Date.now();
+        let outcome: NavigationOutcome;
+        try {
+            const path = graph.findPath(this.position, target);
+            for (const waypoint of path) {
+                if (movement.cancelled) {
+                    outcome = { actionId, status: "cancelled", target, reason: "movement_replaced_or_stopped" };
+                    this.sendPosition(this.position, false);
+                    this.emitNavigation(outcome);
+                    return outcome;
+                }
+                if (Date.now() - startedAt > (this.options.movementTimeoutMs ?? 30_000)) {
+                    throw new Error("Movement timed out before reaching the target");
+                }
+                this.sendPosition(waypoint, true);
+                // Movement frames must be paced in path order.
+                // eslint-disable-next-line no-await-in-loop
+                await this.waitForMovementStep();
+            }
+            this.sendPosition(this.position, false);
+            outcome = { actionId, status: "completed", target: { ...this.position } };
+        } catch (error: unknown) {
+            outcome = {
+                actionId,
+                status: movement.cancelled ? "cancelled" : "failed",
+                target,
+                reason: error instanceof Error ? error.message : "Unknown navigation error",
+            };
+        } finally {
+            if (this.activeMovement === movement) {
+                this.activeMovement = undefined;
+            }
+        }
+        this.emitNavigation(outcome);
+        return outcome;
+    }
+
+    private sendPosition(next: PixelPoint, moving: boolean): void {
+        const deltaX = next.x - this.position.x;
+        const deltaY = next.y - this.position.y;
+        if (Math.abs(deltaX) >= Math.abs(deltaY) && deltaX !== 0) {
+            this.direction = deltaX > 0 ? PositionMessage_Direction.RIGHT : PositionMessage_Direction.LEFT;
+        } else if (deltaY !== 0) {
+            this.direction = deltaY > 0 ? PositionMessage_Direction.DOWN : PositionMessage_Direction.UP;
+        }
+        this.position = { ...next };
+        this.send({
+            message: {
+                $case: "userMovesMessage",
+                userMovesMessage: {
+                    position: { x: next.x, y: next.y, direction: this.direction, moving },
+                    viewport: this.viewportFor(next.x, next.y),
+                },
+            },
+        });
+    }
+
+    private waitForMovementStep(): Promise<void> {
+        return new Promise((resolve) => {
+            setTimeout(resolve, this.options.movementStepMs ?? 100);
+        });
+    }
+
+    private continueFollowing(changedUserUuid?: string): void {
+        const follow = this.followTarget;
+        if (
+            follow === undefined ||
+            this.activeMovement !== undefined ||
+            (changedUserUuid !== undefined && changedUserUuid !== follow.userUuid)
+        ) {
+            return;
+        }
+        let target: PixelPoint;
+        try {
+            target = this.approachTarget(follow.userUuid, follow.distance);
+        } catch {
+            return;
+        }
+        if (Math.hypot(target.x - this.position.x, target.y - this.position.y) < Math.max(8, follow.distance / 4)) {
+            return;
+        }
+        this.followRevision += 1;
+        const actionId = `${follow.actionId}:replan:${String(this.followRevision)}`;
+        this.navigate(target, actionId, true)
+            .then(() => this.continueFollowing(follow.userUuid))
+            .catch(() => undefined);
+    }
+
+    private emitNavigation(outcome: NavigationOutcome): void {
+        this.emit({
+            type: `navigation.${outcome.status}`,
+            actionId: outcome.actionId,
+            target: outcome.target,
+            ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+        });
     }
 
     private send(message: ClientToServerMessage): void {

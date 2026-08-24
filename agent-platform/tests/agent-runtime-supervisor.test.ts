@@ -19,7 +19,11 @@ import {
 } from "../src/infrastructure/memory-adapters";
 import { AgentRuntimeSupervisor } from "../src/runtime/agent-runtime-supervisor";
 import type { AgentWorldEvent } from "../src/runtime/contracts";
-import type { AgentAvailabilityName, WorkAdventureRoomClientOptions } from "../src/runtime/workadventure-room-client";
+import type {
+    AgentAvailabilityName,
+    NavigationOutcome,
+    WorkAdventureRoomClientOptions,
+} from "../src/runtime/workadventure-room-client";
 import { AdminService } from "../src/services/admin-service";
 import { MemoryIdempotencyStore } from "../src/services/idempotency-store";
 
@@ -57,6 +61,7 @@ class FakeAgentRoomClient {
     readonly said: string[] = [];
     readonly statuses: AgentAvailabilityName[] = [];
     readonly emotes: string[] = [];
+    readonly moves: Array<{ x: number; y: number; actionId: string }> = [];
     started = false;
 
     public constructor(readonly options: WorkAdventureRoomClientOptions) {}
@@ -81,11 +86,36 @@ class FakeAgentRoomClient {
         this.emotes.push(emote);
     }
 
+    moveTo(x: number, y: number, actionId: string): Promise<NavigationOutcome> {
+        this.moves.push({ x, y, actionId });
+        return Promise.resolve({ actionId, status: "completed", target: { x, y } });
+    }
+
+    moveToArea(_areaName: string, actionId: string): Promise<NavigationOutcome> {
+        return Promise.resolve({ actionId, status: "completed", target: { x: 32, y: 64 } });
+    }
+
+    approachUser(_userUuid: string, distance: number, actionId: string): Promise<NavigationOutcome> {
+        return Promise.resolve({ actionId, status: "completed", target: { x: distance, y: distance } });
+    }
+
+    followUser(_userUuid: string, distance: number, actionId: string): Promise<NavigationOutcome> {
+        return Promise.resolve({ actionId, status: "completed", target: { x: distance, y: distance } });
+    }
+
+    stopMoving(actionId: string): NavigationOutcome {
+        return { actionId, status: "completed", target: { x: 0, y: 0 } };
+    }
+
     getSelfState(): Record<string, unknown> {
         return { connected: this.started, agentId: this.options.agentId };
     }
 
     getNearbyUsers(): unknown[] {
+        return [];
+    }
+
+    getMapAreas(): unknown[] {
         return [];
     }
 
@@ -272,6 +302,31 @@ describe("Hermes agent runtime supervisor", () => {
         });
         expect(firstRoom.said).toEqual(["Reply from Hermes"]);
         expect(secondRoom.said).toEqual([]);
+
+        const movementResultPromise = receive(socket);
+        socket.send(
+            JSON.stringify(
+                ClientMessageSchema.parse({
+                    type: "tool.call",
+                    messageId: "movement-message-runtime",
+                    sentAt: new Date().toISOString(),
+                    eventId: worldEvent.eventId,
+                    lane: worldEvent.lane,
+                    hermesRunId: "run-runtime",
+                    toolCallId: "move-runtime",
+                    name: "wa_move_to",
+                    arguments: { x: 320, y: 224 },
+                }),
+            ),
+        );
+        await expect(movementResultPromise).resolves.toMatchObject({
+            type: "tool.result",
+            lane: { agentId: firstAgent.id, profileId: "profile-one" },
+            outcome: "succeeded",
+            result: { navigation: { actionId: "move-runtime", status: "completed" } },
+        });
+        expect(firstRoom.moves).toEqual([{ x: 320, y: 224, actionId: "move-runtime" }]);
+        expect(secondRoom.moves).toEqual([]);
     });
 
     afterEach(async () => {
