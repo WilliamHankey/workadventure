@@ -41,14 +41,16 @@ const decode = (data: RawData): unknown => {
 
 const receive = async (socket: WebSocket): Promise<ServerMessage> =>
     new Promise((resolve, reject) => {
+        const onError = (error: Error): void => reject(error);
         socket.once("message", (data) => {
+            socket.off("error", onError);
             try {
                 resolve(ServerMessageSchema.parse(decode(data)));
             } catch (error: unknown) {
                 reject(error instanceof Error ? error : new Error("Invalid server message"));
             }
         });
-        socket.once("error", reject);
+        socket.once("error", onError);
     });
 
 const open = async (socket: WebSocket): Promise<void> =>
@@ -63,6 +65,7 @@ class FakeAgentRoomClient {
     readonly emotes: string[] = [];
     readonly moves: Array<{ x: number; y: number; actionId: string }> = [];
     readonly voiceIndicators: boolean[] = [];
+    readonly cameraStates: boolean[] = [];
     started = false;
 
     public constructor(readonly options: WorkAdventureRoomClientOptions) {}
@@ -95,6 +98,10 @@ class FakeAgentRoomClient {
 
     setVoiceIndicator(enabled: boolean): void {
         this.voiceIndicators.push(enabled);
+    }
+
+    setCameraState(enabled: boolean): void {
+        this.cameraStates.push(enabled);
     }
 
     moveTo(x: number, y: number, actionId: string): Promise<NavigationOutcome> {
@@ -170,7 +177,8 @@ describe("Hermes agent runtime supervisor", () => {
                 ownerWorkAdventureUuid: "owner-1",
                 wokaTextureIds: ["body-1"],
                 voiceId: "voice-1",
-                permissions: {},
+                videoMode: "animated_woka",
+                permissions: { video: true },
                 enabled: true,
             }),
         );
@@ -467,5 +475,92 @@ describe("Hermes agent runtime supervisor", () => {
             outcome: "succeeded",
             result: { publication: "published" },
         });
+
+        const videoPublishPromise = receive(socket);
+        socket.send(
+            JSON.stringify(
+                ClientMessageSchema.parse({
+                    type: "tool.call",
+                    messageId: "video-tool-e2e",
+                    sentAt: new Date().toISOString(),
+                    lane: transcriptEvent.lane,
+                    eventId: transcriptEvent.eventId,
+                    hermesRunId: "video-run-e2e",
+                    toolCallId: "video-tool-call-e2e",
+                    name: "wa_start_video",
+                    arguments: {},
+                }),
+            ),
+        );
+        const videoPublish = await videoPublishPromise;
+        if (videoPublish.type !== "video.publish") throw new Error("Expected video.publish");
+        expect(videoPublish).toMatchObject({
+            lane: { agentId: firstAgent.id, profileId: "profile-one" },
+            representation: { mode: "animated_woka", wokaTextureIds: ["body-1"] },
+            limits: { width: 640, height: 360, fps: 15, bitrateKbps: 600 },
+        });
+        const videoToolResultPromise = receive(socket);
+        socket.send(
+            JSON.stringify(
+                ClientMessageSchema.parse({
+                    type: "video.state",
+                    messageId: "video-state-e2e",
+                    sentAt: new Date().toISOString(),
+                    lane: videoPublish.lane,
+                    mediaSessionId: videoPublish.mediaSessionId,
+                    publicationId: videoPublish.publicationId,
+                    state: "publishing",
+                    reason: null,
+                }),
+            ),
+        );
+        await expect(videoToolResultPromise).resolves.toMatchObject({
+            type: "tool.result",
+            lane: { agentId: firstAgent.id, profileId: "profile-one" },
+            outcome: "succeeded",
+            result: { state: "publishing" },
+        });
+        expect(firstRoom.cameraStates).toEqual([true]);
+        expect(secondRoom.cameraStates).toEqual([]);
+
+        const videoStopPromise = receive(socket);
+        socket.send(
+            JSON.stringify(
+                ClientMessageSchema.parse({
+                    type: "tool.call",
+                    messageId: "video-stop-tool-e2e",
+                    sentAt: new Date().toISOString(),
+                    lane: transcriptEvent.lane,
+                    eventId: transcriptEvent.eventId,
+                    hermesRunId: "video-stop-run-e2e",
+                    toolCallId: "video-stop-call-e2e",
+                    name: "wa_stop_video",
+                    arguments: {},
+                }),
+            ),
+        );
+        const videoStop = await videoStopPromise;
+        if (videoStop.type !== "video.stop") throw new Error("Expected video.stop");
+        const videoStopResultPromise = receive(socket);
+        socket.send(
+            JSON.stringify(
+                ClientMessageSchema.parse({
+                    type: "video.state",
+                    messageId: "video-stopped-state-e2e",
+                    sentAt: new Date().toISOString(),
+                    lane: videoStop.lane,
+                    mediaSessionId: videoStop.mediaSessionId,
+                    publicationId: videoStop.publicationId,
+                    state: "stopped",
+                    reason: null,
+                }),
+            ),
+        );
+        await expect(videoStopResultPromise).resolves.toMatchObject({
+            type: "tool.result",
+            outcome: "succeeded",
+            result: { stopped: true },
+        });
+        expect(firstRoom.cameraStates).toEqual([true, false]);
     });
 });

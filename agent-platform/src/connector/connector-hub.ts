@@ -38,10 +38,17 @@ interface ActiveMediaSession {
     spaceName: string;
     allowedParticipantIdentity: string;
     allowedParticipantUuid: string;
+    videoPublicationId?: string;
 }
 
 interface PendingSpeech {
     resolve: (message: Extract<ClientMessage, { type: "speech.result" }>) => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+}
+
+interface PendingVideo {
+    resolve: (message: Extract<ClientMessage, { type: "video.state" }>) => void;
     reject: (error: Error) => void;
     timeout: ReturnType<typeof setTimeout>;
 }
@@ -96,6 +103,7 @@ export class ConnectorHub {
     private readonly mediaEventHandlers = new Map<string, MediaEventHandler>();
     private readonly mediaSessions = new Map<string, ActiveMediaSession>();
     private readonly pendingSpeech = new Map<string, PendingSpeech>();
+    private readonly pendingVideo = new Map<string, PendingVideo>();
 
     constructor(
         private readonly service: AdminService,
@@ -156,6 +164,18 @@ export class ConnectorHub {
             keyof AgentLane | "type" | "messageId" | "sentAt" | "lane"
         >,
     ): Promise<void> {
+        const previous = this.mediaSessions.get(agentId);
+        if (previous !== undefined) {
+            const previousConnection = this.requireConnectionForLane(previous.lane);
+            await this.send(previousConnection.socket, {
+                ...messageBase(),
+                type: "media.stop",
+                lane: previous.lane,
+                mediaSessionId: previous.mediaSessionId,
+                reason: "media_invitation_replaced",
+            });
+            this.mediaSessions.delete(agentId);
+        }
         const { connection, binding } = this.requireLocatedBinding(agentId);
         const lane: AgentLane = {
             agentId,
@@ -230,6 +250,62 @@ export class ConnectorHub {
                 clearTimeout(pending.timeout);
                 this.pendingSpeech.delete(speechId);
             }
+            throw error;
+        }
+    }
+
+    async publishVideo(
+        agentId: string,
+        representation: Extract<ServerMessage, { type: "video.publish" }>["representation"],
+        timeoutMs = 30_000,
+    ): Promise<Extract<ClientMessage, { type: "video.state" }>> {
+        const active = this.mediaSessions.get(agentId);
+        if (active === undefined) {
+            throw new Error("Agent does not have an active invitation-bound media session");
+        }
+        const connection = this.requireConnectionForLane(active.lane);
+        const publicationId = randomUUID();
+        active.videoPublicationId = publicationId;
+        const result = this.waitForVideo(publicationId, timeoutMs);
+        try {
+            await this.send(connection.socket, {
+                ...messageBase(),
+                type: "video.publish",
+                lane: active.lane,
+                mediaSessionId: active.mediaSessionId,
+                publicationId,
+                representation,
+                limits: { width: 640, height: 360, fps: 15, bitrateKbps: 600 },
+            });
+            return await result;
+        } catch (error: unknown) {
+            this.rejectPendingVideo(publicationId, error);
+            throw error;
+        }
+    }
+
+    async stopVideo(agentId: string, reason: string, timeoutMs = 15_000): Promise<void> {
+        const active = this.mediaSessions.get(agentId);
+        if (active?.videoPublicationId === undefined) return;
+        const connection = this.requireConnectionForLane(active.lane);
+        const publicationId = active.videoPublicationId;
+        const result = this.waitForVideo(publicationId, timeoutMs);
+        try {
+            await this.send(connection.socket, {
+                ...messageBase(),
+                type: "video.stop",
+                lane: active.lane,
+                mediaSessionId: active.mediaSessionId,
+                publicationId,
+                reason,
+            });
+            const state = await result;
+            if (state.state !== "stopped") {
+                throw new Error(state.reason ?? "Hermes Desktop did not stop the video publication");
+            }
+            active.videoPublicationId = undefined;
+        } catch (error: unknown) {
+            this.rejectPendingVideo(publicationId, error);
             throw error;
         }
     }
@@ -331,6 +407,16 @@ export class ConnectorHub {
             }
             clearTimeout(pending.timeout);
             this.pendingSpeech.delete(message.speechId);
+            pending.resolve(message);
+        }
+        if (message.type === "video.state") {
+            this.requireActiveMedia(message.lane.agentId, message.mediaSessionId, message.lane);
+            const pending = this.pendingVideo.get(message.publicationId);
+            if (pending === undefined || message.state === "starting") {
+                return connection.connectorId;
+            }
+            clearTimeout(pending.timeout);
+            this.pendingVideo.delete(message.publicationId);
             pending.resolve(message);
         }
         return connection.connectorId;
@@ -448,6 +534,27 @@ export class ConnectorHub {
             throw new Error("Media message does not match the active invitation-bound agent lane");
         }
         return active;
+    }
+
+    private waitForVideo(
+        publicationId: string,
+        timeoutMs: number,
+    ): Promise<Extract<ClientMessage, { type: "video.state" }>> {
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                this.pendingVideo.delete(publicationId);
+                reject(new Error("Timed out waiting for Hermes Desktop video state"));
+            }, timeoutMs);
+            this.pendingVideo.set(publicationId, { resolve, reject, timeout });
+        });
+    }
+
+    private rejectPendingVideo(publicationId: string, error: unknown): void {
+        const pending = this.pendingVideo.get(publicationId);
+        if (pending === undefined) return;
+        clearTimeout(pending.timeout);
+        this.pendingVideo.delete(publicationId);
+        pending.reject(error instanceof Error ? error : new Error("Video publication failed"));
     }
 
     private async send(socket: WebSocket, message: ServerMessage): Promise<void> {

@@ -27,6 +27,7 @@ interface AgentRoomClient {
     respondToMeetingInvitation(senderUserUuid: string, accept: boolean): void;
     leaveMeeting(reason?: string): Promise<void>;
     setVoiceIndicator(enabled: boolean): void;
+    setCameraState(enabled: boolean): void;
     moveTo(x: number, y: number, actionId: string): Promise<NavigationOutcome>;
     moveToArea(areaName: string, actionId: string): Promise<NavigationOutcome>;
     approachUser(userUuid: string, distance: number, actionId: string): Promise<NavigationOutcome>;
@@ -347,6 +348,7 @@ export class AgentRuntimeSupervisor {
         }
         if (message.type === "media.stopped") {
             client.setVoiceIndicator(false);
+            client.setCameraState(false);
             return;
         }
         await this.connectorHub.dispatchWorldEvent(
@@ -489,6 +491,46 @@ export class AgentRuntimeSupervisor {
                         publication: speech.outcome,
                         reason: speech.reason,
                     };
+                    break;
+                }
+                case "wa_start_video": {
+                    StopArgumentsSchema.parse(message.arguments);
+                    if (agent.videoMode === "none") {
+                        throw new Error("Agent videoMode is not configured");
+                    }
+                    if (agent.videoMode === "asset" && agent.videoAssetRef === null) {
+                        throw new Error("Agent videoAssetRef is required for asset videoMode");
+                    }
+                    const representation =
+                        agent.videoMode === "asset"
+                            ? {
+                                  mode: "asset" as const,
+                                  displayName: agent.displayName,
+                                  wokaTextureIds: agent.wokaTextureIds,
+                                  assetRef: agent.videoAssetRef ?? "",
+                              }
+                            : {
+                                  mode: "animated_woka" as const,
+                                  displayName: agent.displayName,
+                                  wokaTextureIds: agent.wokaTextureIds,
+                                  assetRef: null,
+                              };
+                    const video = await this.connectorHub.publishVideo(agent.id, representation);
+                    client.setCameraState(video.state === "publishing");
+                    outcome = video.state === "publishing" ? "succeeded" : "failed";
+                    result = {
+                        mediaSessionId: video.mediaSessionId,
+                        publicationId: video.publicationId,
+                        state: video.state,
+                        reason: video.reason,
+                    };
+                    break;
+                }
+                case "wa_stop_video": {
+                    StopArgumentsSchema.parse(message.arguments);
+                    await this.connectorHub.stopVideo(agent.id, "stopped_by_hermes");
+                    client.setCameraState(false);
+                    result = { stopped: true };
                     break;
                 }
                 default: {

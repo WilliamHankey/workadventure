@@ -223,6 +223,10 @@ export class WorkAdventureRoomClient {
         if (meeting === undefined) {
             return;
         }
+        if (meeting.spaceName !== "pending") {
+            this.setVoiceIndicator(false);
+            this.setCameraState(false);
+        }
         this.activeMeeting = undefined;
         if (meeting.spaceName !== "pending") {
             await this.query({
@@ -253,6 +257,26 @@ export class WorkAdventureRoomClient {
                         showVoiceIndicator: enabled,
                     }),
                     updateMask: ["microphoneState", "showVoiceIndicator"],
+                },
+            },
+        });
+    }
+
+    setCameraState(enabled: boolean): void {
+        const meeting = this.activeMeeting;
+        if (meeting === undefined || meeting.spaceName === "pending") {
+            return;
+        }
+        this.send({
+            message: {
+                $case: "updateSpaceUserMessage",
+                updateSpaceUserMessage: {
+                    spaceName: meeting.spaceName,
+                    user: SpaceUser.fromPartial({
+                        spaceUserId: meeting.spaceUserId,
+                        cameraState: enabled,
+                    }),
+                    updateMask: ["cameraState"],
                 },
             },
         });
@@ -656,6 +680,7 @@ export class WorkAdventureRoomClient {
                 this.options.onMediaStop?.(mediaSessionId, "workadventure_livekit_disconnect").catch(() => undefined);
             }
             this.setVoiceIndicator(false);
+            this.setCameraState(false);
             return;
         }
         if (event?.$case !== "livekitInvitationMessage" || event.livekitInvitationMessage === undefined) {
@@ -667,16 +692,24 @@ export class WorkAdventureRoomClient {
             return;
         }
         const mediaSessionId = `media-${randomUUID()}`;
+        const previousMediaSessionId = meeting.mediaSessionId;
         meeting.mediaSessionId = mediaSessionId;
-        this.options
-            .onMediaInvitation?.({
-                mediaSessionId,
-                spaceName: meeting.spaceName,
-                serverUrl: event.livekitInvitationMessage.serverUrl,
-                token: event.livekitInvitationMessage.token,
-                allowedParticipantIdentity: allowedParticipant.spaceUserId,
-                allowedParticipantUuid: allowedParticipant.uuid,
-            })
+        const replacePrevious =
+            previousMediaSessionId === undefined
+                ? Promise.resolve()
+                : (this.options.onMediaStop?.(previousMediaSessionId, "media_invitation_replaced") ??
+                  Promise.resolve());
+        replacePrevious
+            .then(async () =>
+                this.options.onMediaInvitation?.({
+                    mediaSessionId,
+                    spaceName: meeting.spaceName,
+                    serverUrl: event.livekitInvitationMessage.serverUrl,
+                    token: event.livekitInvitationMessage.token,
+                    allowedParticipantIdentity: allowedParticipant.spaceUserId,
+                    allowedParticipantUuid: allowedParticipant.uuid,
+                }),
+            )
             .catch((error: unknown) =>
                 this.emit({
                     type: "connection.degraded",

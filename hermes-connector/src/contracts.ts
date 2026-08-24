@@ -72,6 +72,8 @@ export interface HermesMediaSession {
     readonly lane: AgentLane;
     readonly mediaSessionId: string;
     speak(speechId: string, text: string, voiceId: string | null): Promise<"published" | "interrupted">;
+    startVideo?(publication: Extract<ServerMessage, { type: "video.publish" }>): Promise<"publishing" | "failed">;
+    stopVideo?(publicationId: string, reason: string): Promise<void>;
     stop(reason: string): Promise<void>;
 }
 

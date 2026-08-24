@@ -123,6 +123,7 @@ class FakeMediaAdapter implements HermesMediaAdapter {
     handlers: HermesMediaSessionHandlers | undefined;
     session: HermesMediaSession | undefined;
     readonly spoken: Array<{ speechId: string; text: string; voiceId: string | null }> = [];
+    readonly videos: string[] = [];
 
     async start(
         invitation: Extract<ServerMessage, { type: "media.invitation" }>,
@@ -135,6 +136,14 @@ class FakeMediaAdapter implements HermesMediaAdapter {
             speak: (speechId, text, voiceId) => {
                 this.spoken.push({ speechId, text, voiceId });
                 return Promise.resolve("published");
+            },
+            startVideo: (publication) => {
+                this.videos.push(`start:${publication.publicationId}`);
+                return Promise.resolve("publishing");
+            },
+            stopVideo: (publicationId) => {
+                this.videos.push(`stop:${publicationId}`);
+                return Promise.resolve();
             },
             stop: async (reason) => handlers.stopped(reason),
         };
@@ -364,6 +373,28 @@ describe("Hermes connector", () => {
         });
         await transport.deliver({
             ...base,
+            type: "video.publish",
+            lane,
+            mediaSessionId: "media-session-1",
+            publicationId: "video-1",
+            representation: {
+                mode: "animated_woka",
+                displayName: "Agent One",
+                wokaTextureIds: ["body-1"],
+                assetRef: null,
+            },
+            limits: { width: 640, height: 360, fps: 15, bitrateKbps: 600 },
+        });
+        await transport.deliver({
+            ...base,
+            type: "video.stop",
+            lane,
+            mediaSessionId: "media-session-1",
+            publicationId: "video-1",
+            reason: "stopped_by_hermes",
+        });
+        await transport.deliver({
+            ...base,
             type: "media.stop",
             lane,
             mediaSessionId: "media-session-1",
@@ -394,6 +425,25 @@ describe("Hermes connector", () => {
         expect(mediaAdapter.spoken).toEqual([
             { speechId: "speech-1", text: "Yes, I can hear you.", voiceId: "voice-1" },
         ]);
+        expect(mediaAdapter.videos).toEqual(["start:video-1", "stop:video-1"]);
+        expect(messages).toContainEqual(
+            expect.objectContaining({
+                type: "video.state",
+                lane,
+                mediaSessionId: "media-session-1",
+                publicationId: "video-1",
+                state: "publishing",
+            })
+        );
+        expect(messages).toContainEqual(
+            expect.objectContaining({
+                type: "video.state",
+                lane,
+                mediaSessionId: "media-session-1",
+                publicationId: "video-1",
+                state: "stopped",
+            })
+        );
         expect(JSON.stringify(messages)).not.toContain("livekit-token-never-sent-to-hermes-model");
     });
 

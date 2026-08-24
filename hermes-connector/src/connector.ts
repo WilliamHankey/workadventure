@@ -173,6 +173,12 @@ export class HermesConnector {
             case "speech.publish":
                 await this.publishSpeech(message);
                 break;
+            case "video.publish":
+                await this.publishVideo(message);
+                break;
+            case "video.stop":
+                await this.stopVideo(message);
+                break;
         }
     }
 
@@ -277,6 +283,62 @@ export class HermesConnector {
             mediaSessionId: message.mediaSessionId,
             speechId: message.speechId,
             outcome,
+            reason,
+        });
+    }
+
+    private async publishVideo(
+        message: Extract<ReturnType<typeof ServerMessageSchema.parse>, { type: "video.publish" }>
+    ): Promise<void> {
+        this.requireBinding(message.lane);
+        const session = this.mediaSessions.get(message.mediaSessionId);
+        let state: "publishing" | "failed" = "failed";
+        let reason: string | null = "media_session_or_video_adapter_unavailable";
+        try {
+            if (
+                session !== undefined &&
+                bindingMatchesLane(this.requireBinding(message.lane), session.lane) &&
+                session.startVideo !== undefined
+            ) {
+                state = await session.startVideo(message);
+                reason = state === "publishing" ? null : "video_publication_failed";
+            }
+        } catch (error: unknown) {
+            reason = asError(error).message.slice(0, 255);
+        }
+        await this.send({
+            ...messageBase(),
+            type: "video.state",
+            lane: message.lane,
+            mediaSessionId: message.mediaSessionId,
+            publicationId: message.publicationId,
+            state,
+            reason,
+        });
+    }
+
+    private async stopVideo(
+        message: Extract<ReturnType<typeof ServerMessageSchema.parse>, { type: "video.stop" }>
+    ): Promise<void> {
+        this.requireBinding(message.lane);
+        const session = this.mediaSessions.get(message.mediaSessionId);
+        let state: "stopped" | "failed" = "stopped";
+        let reason: string | null = null;
+        try {
+            if (session !== undefined && bindingMatchesLane(this.requireBinding(message.lane), session.lane)) {
+                await session.stopVideo?.(message.publicationId, message.reason);
+            }
+        } catch (error: unknown) {
+            state = "failed";
+            reason = asError(error).message.slice(0, 255);
+        }
+        await this.send({
+            ...messageBase(),
+            type: "video.state",
+            lane: message.lane,
+            mediaSessionId: message.mediaSessionId,
+            publicationId: message.publicationId,
+            state,
             reason,
         });
     }

@@ -245,6 +245,7 @@ describe("headless WorkAdventure room client", () => {
         const sockets: FakeRoomSocket[] = [];
         const events: AgentWorldEvent[] = [];
         const mediaInvitations: AgentMediaInvitation[] = [];
+        const stoppedMedia: Array<{ mediaSessionId: string; reason: string }> = [];
         const client = new WorkAdventureRoomClient({
             agentId: "agent-voice",
             token: "signed-token",
@@ -262,6 +263,10 @@ describe("headless WorkAdventure room client", () => {
             },
             onMediaInvitation: (invitation) => {
                 mediaInvitations.push(invitation);
+                return Promise.resolve();
+            },
+            onMediaStop: (mediaSessionId, reason) => {
+                stoppedMedia.push({ mediaSessionId, reason });
                 return Promise.resolve();
             },
             socketFactory: (_url, _protocols, handlers) => {
@@ -399,6 +404,51 @@ describe("headless WorkAdventure room client", () => {
                 user: { spaceUserId: "agent-space", microphoneState: true, showVoiceIndicator: true },
             },
         });
+        client.setCameraState(true);
+        expect(decodeClientFrame(requireItem(socket.sent.at(-1), "camera state frame")).message?.message).toMatchObject(
+            {
+                $case: "updateSpaceUserMessage",
+                updateSpaceUserMessage: {
+                    spaceName: "meeting-space",
+                    user: { spaceUserId: "agent-space", cameraState: true },
+                },
+            },
+        );
+        socket.receive(6, {
+            message: {
+                $case: "batchMessage",
+                batchMessage: {
+                    event: "",
+                    payload: [
+                        {
+                            message: {
+                                $case: "privateEvent",
+                                privateEvent: {
+                                    spaceName: "meeting-space",
+                                    receiverUserId: "agent-space",
+                                    sender: SpaceUser.fromPartial({ spaceUserId: "agent-space", uuid: "agent-voice" }),
+                                    spaceEvent: {
+                                        event: {
+                                            $case: "livekitInvitationMessage",
+                                            livekitInvitationMessage: {
+                                                serverUrl: "wss://livekit.example",
+                                                token: "replacement-token",
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    ],
+                },
+            },
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(mediaInvitations).toHaveLength(2);
+        expect(stoppedMedia).toEqual([
+            { mediaSessionId: mediaInvitations[0]?.mediaSessionId, reason: "media_invitation_replaced" },
+        ]);
         client.stop();
     });
 

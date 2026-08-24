@@ -168,6 +168,15 @@ export const SpeechResultSchema = MessageBaseSchema.extend({
     reason: z.string().min(1).max(255).nullable(),
 });
 
+export const VideoStateSchema = MessageBaseSchema.extend({
+    type: z.literal("video.state"),
+    lane: AgentLaneSchema,
+    mediaSessionId: IdSchema,
+    publicationId: IdSchema,
+    state: z.enum(["starting", "publishing", "stopped", "failed"]),
+    reason: z.string().min(1).max(255).nullable(),
+});
+
 export const ClientMessageSchema = z.discriminatedUnion("type", [
     ConnectorHelloSchema,
     ConnectorHeartbeatSchema,
@@ -180,6 +189,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     MediaTranscriptSchema,
     MediaStoppedSchema,
     SpeechResultSchema,
+    VideoStateSchema,
 ]);
 
 export const ConnectorAcceptedSchema = MessageBaseSchema.extend({
@@ -249,6 +259,41 @@ export const SpeechPublishSchema = MessageBaseSchema.extend({
     voiceId: z.string().min(1).max(255).nullable(),
 });
 
+export const VideoPublishSchema = MessageBaseSchema.extend({
+    type: z.literal("video.publish"),
+    lane: AgentLaneSchema,
+    mediaSessionId: IdSchema,
+    publicationId: IdSchema,
+    representation: z.discriminatedUnion("mode", [
+        z.object({
+            mode: z.literal("animated_woka"),
+            displayName: z.string().min(1).max(160),
+            wokaTextureIds: z.array(IdSchema).min(1).max(32),
+            assetRef: z.null(),
+        }),
+        z.object({
+            mode: z.literal("asset"),
+            displayName: z.string().min(1).max(160),
+            wokaTextureIds: z.array(IdSchema).min(1).max(32),
+            assetRef: z.string().min(1).max(512),
+        }),
+    ]),
+    limits: z.object({
+        width: z.number().int().min(64).max(1280),
+        height: z.number().int().min(64).max(720),
+        fps: z.number().int().min(1).max(30),
+        bitrateKbps: z.number().int().min(64).max(2_500),
+    }),
+});
+
+export const VideoStopSchema = MessageBaseSchema.extend({
+    type: z.literal("video.stop"),
+    lane: AgentLaneSchema,
+    mediaSessionId: IdSchema,
+    publicationId: IdSchema,
+    reason: z.string().min(1).max(255),
+});
+
 export const ServerMessageSchema = z.discriminatedUnion("type", [
     ConnectorAcceptedSchema,
     WorldEventDispatchSchema,
@@ -257,6 +302,8 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
     MediaInvitationSchema,
     MediaStopSchema,
     SpeechPublishSchema,
+    VideoPublishSchema,
+    VideoStopSchema,
 ]);
 
 export type AgentToolName = z.infer<typeof AgentToolNameSchema>;

@@ -23,6 +23,12 @@ const BridgeMessageSchema = z.discriminatedUnion("type", [
         outcome: z.enum(["published", "interrupted", "failed"]),
         reason: z.string().min(1).max(255).nullable(),
     }),
+    z.object({
+        type: z.literal("video.state"),
+        publicationId: z.string().min(1).max(128),
+        state: z.enum(["starting", "publishing", "stopped", "failed"]),
+        reason: z.string().min(1).max(255).nullable(),
+    }),
 ]);
 
 interface LocalMediaBridgeOptions {
@@ -34,6 +40,12 @@ interface LocalMediaBridgeOptions {
 
 interface PendingSpeech {
     resolve: (outcome: "published" | "interrupted") => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+}
+
+interface PendingVideo {
+    resolve: (state: "publishing" | "stopped") => void;
     reject: (error: Error) => void;
     timeout: ReturnType<typeof setTimeout>;
 }
@@ -83,6 +95,7 @@ export class LocalMediaBridgeAdapter implements HermesMediaAdapter {
         });
 
         const pendingSpeech = new Map<string, PendingSpeech>();
+        const pendingVideo = new Map<string, PendingVideo>();
         let stopped = false;
         const rejectPending = (error: Error): void => {
             for (const pending of pendingSpeech.values()) {
@@ -90,6 +103,11 @@ export class LocalMediaBridgeAdapter implements HermesMediaAdapter {
                 pending.reject(error);
             }
             pendingSpeech.clear();
+            for (const pending of pendingVideo.values()) {
+                clearTimeout(pending.timeout);
+                pending.reject(error);
+            }
+            pendingVideo.clear();
         };
         socket.on("message", (data) => {
             let message: z.infer<typeof BridgeMessageSchema>;
@@ -107,7 +125,7 @@ export class LocalMediaBridgeAdapter implements HermesMediaAdapter {
                 stopped = true;
                 rejectPending(new Error(message.reason));
                 handlers.stopped(message.reason).catch(() => undefined);
-            } else {
+            } else if (message.type === "speech.result") {
                 const pending = pendingSpeech.get(message.speechId);
                 if (pending === undefined) return;
                 clearTimeout(pending.timeout);
@@ -116,6 +134,17 @@ export class LocalMediaBridgeAdapter implements HermesMediaAdapter {
                     pending.reject(new Error(message.reason ?? "Local media bridge speech failed"));
                 } else {
                     pending.resolve(message.outcome);
+                }
+            } else {
+                if (message.state === "starting") return;
+                const pending = pendingVideo.get(message.publicationId);
+                if (pending === undefined) return;
+                clearTimeout(pending.timeout);
+                pendingVideo.delete(message.publicationId);
+                if (message.state === "failed") {
+                    pending.reject(new Error(message.reason ?? "Local media bridge video failed"));
+                } else {
+                    pending.resolve(message.state);
                 }
             }
         });
@@ -157,6 +186,39 @@ export class LocalMediaBridgeAdapter implements HermesMediaAdapter {
                 });
                 socket.send(JSON.stringify({ type: "speech", speechId, text, voiceId }));
                 return result;
+            },
+            startVideo: (publication) => {
+                if (stopped || socket.readyState !== WebSocket.OPEN) {
+                    return Promise.reject(new Error("Local media bridge session is not open"));
+                }
+                const result = new Promise<"publishing" | "stopped">((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        pendingVideo.delete(publication.publicationId);
+                        reject(new Error("Local media bridge video start timed out"));
+                    }, this.options.speechTimeoutMs ?? 30_000);
+                    pendingVideo.set(publication.publicationId, { resolve, reject, timeout });
+                });
+                socket.send(
+                    JSON.stringify({
+                        type: "video.start",
+                        publicationId: publication.publicationId,
+                        representation: publication.representation,
+                        limits: publication.limits,
+                    })
+                );
+                return result.then((state) => (state === "publishing" ? "publishing" : "failed"));
+            },
+            stopVideo: (publicationId, reason) => {
+                if (stopped || socket.readyState !== WebSocket.OPEN) return Promise.resolve();
+                const result = new Promise<"publishing" | "stopped">((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        pendingVideo.delete(publicationId);
+                        reject(new Error("Local media bridge video stop timed out"));
+                    }, this.options.speechTimeoutMs ?? 30_000);
+                    pendingVideo.set(publicationId, { resolve, reject, timeout });
+                });
+                socket.send(JSON.stringify({ type: "video.stop", publicationId, reason }));
+                return result.then(() => undefined);
             },
             stop: async (reason) => {
                 if (stopped) return;
