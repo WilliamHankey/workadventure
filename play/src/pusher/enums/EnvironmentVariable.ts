@@ -36,6 +36,7 @@ export const ADMIN_URL = env.ADMIN_URL;
 export const ADMIN_BO_URL = env.ADMIN_BO_URL || env.ADMIN_URL;
 export const AUTOLOGIN_URL = env.AUTOLOGIN_URL ?? env.ADMIN_URL + "/workadventure/login";
 export const ADMIN_API_TOKEN = env.ADMIN_API_TOKEN;
+export const AGENT_IDENTITY_TOKEN = env.AGENT_IDENTITY_TOKEN;
 export const MAP_STORAGE_API_TOKEN = env.MAP_STORAGE_API_TOKEN;
 export const ADMIN_SOCKETS_TOKEN = env.ADMIN_SOCKETS_TOKEN;
 export const CPU_OVERHEAT_THRESHOLD = env.CPU_OVERHEAT_THRESHOLD;

@@ -1,0 +1,93 @@
+name: Hermes agent platform
+
+on:
+  pull_request:
+    paths:
+      - "agent-platform/**"
+      - "hermes-connector/**"
+      - "libs/hermes-connector-protocol/**"
+      - "libs/messages/**"
+      - "messages/**"
+      - "lowcoder/**"
+      - "play/src/pusher/**"
+      - "play/tests/pusher/AgentIdentityController.test.ts"
+      - "package-lock.json"
+      - "deploy/hermes-agent-platform/**"
+      - "docs/agent-platform/**"
+      - ".github/workflows/hermes-agent-platform.yml"
+      - ".github/workflows/hermes-agent-platform-image.yml"
+  push:
+    branches: [feature/hermes-agent-platform]
+    paths:
+      - "agent-platform/**"
+      - "hermes-connector/**"
+      - "libs/hermes-connector-protocol/**"
+      - "libs/messages/**"
+      - "messages/**"
+      - "lowcoder/**"
+      - "play/src/pusher/**"
+      - "play/tests/pusher/AgentIdentityController.test.ts"
+      - "package-lock.json"
+      - "deploy/hermes-agent-platform/**"
+      - "docs/agent-platform/**"
+      - ".github/workflows/hermes-agent-platform.yml"
+      - ".github/workflows/hermes-agent-platform-image.yml"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17.6-bookworm
+        env:
+          POSTGRES_DB: agent_platform
+          POSTGRES_USER: agent_platform
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent_platform -d agent_platform"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:8.2.1-bookworm
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://agent_platform:test_password@127.0.0.1:5432/agent_platform
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install protobuf generator dependencies
+        run: npm ci
+        working-directory: messages
+      - name: Generate WorkAdventure protocol bindings
+        run: npm run ts-proto
+        working-directory: messages
+      - run: npm run typesafe-i18n --workspace=workadventure-play
+      - run: npm run typecheck --workspace=@workadventure/hermes-connector-protocol
+      - run: npm run lint --workspace=@workadventure/hermes-connector-protocol
+      - run: npm run typecheck --workspace=@workadventure/hermes-connector
+      - run: npm run lint --workspace=@workadventure/hermes-connector
+      - run: npm test --workspace=@workadventure/hermes-connector -- --run
+      - run: npm run typecheck --workspace=@workadventure/agent-platform
+      - run: npm run lint --workspace=@workadventure/agent-platform
+      - run: npm test --workspace=@workadventure/agent-platform -- --run
+      - run: node lowcoder/build-app.mjs --check
+      - run: node lowcoder/validate.mjs
+      - run: node deploy/hermes-agent-platform/validate.mjs
+      - run: bash -n deploy/hermes-agent-platform/backup.sh deploy/hermes-agent-platform/restore.sh deploy/hermes-agent-platform/render-media-config.sh deploy/hermes-agent-platform/render-observability-config.sh
+      - run: npm exec --workspace=workadventure-play -- tsc --noEmit --project tsconfig-pusher.json
+      - run: npm exec --workspace=workadventure-play -- vitest run tests/pusher/AgentIdentityController.test.ts

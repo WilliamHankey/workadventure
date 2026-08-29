@@ -26,3 +26,6 @@ synapse/media_store/*
 
 .vscode/settings.json
 play/src/i18n/ko-KR/*.backup
+# Phase 9 deployment material generated from local secrets.
+deploy/hermes-agent-platform/secrets/
+deploy/hermes-agent-platform/runtime/

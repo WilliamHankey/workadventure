@@ -332,7 +332,7 @@ export class IoSocketController {
                     }
 
                     const userIdentifier = tokenData ? tokenData.identifier : "";
-                    const isLogged = !!tokenData?.accessToken;
+                    const isLogged = tokenData?.serviceIdentity === true || !!tokenData?.accessToken;
 
                     let memberTags: string[] = [];
                     let memberVisitCardUrl: string | null = null;

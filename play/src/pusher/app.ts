@@ -16,6 +16,7 @@ import { OpenIdProfileController } from "./controllers/OpenIdProfileController";
 import { WokaListController } from "./controllers/WokaListController";
 import { SwaggerController } from "./controllers/SwaggerController";
 import {
+    AGENT_IDENTITY_TOKEN,
     ALLOWED_CORS_ORIGIN,
     ENABLE_OPENAPI_ENDPOINT,
     PROMETHEUS_PORT,
@@ -25,7 +26,7 @@ import { PingController } from "./controllers/PingController";
 import { CompanionListController } from "./controllers/CompanionListController";
 import { FrontController } from "./controllers/FrontController";
 import { globalErrorHandler } from "./services/GlobalErrorHandler";
-import { jwtTokenManager } from "./services/JWTTokenManager";
+import { createServiceAuthToken, jwtTokenManager } from "./services/JWTTokenManager";
 import { CompanionService } from "./services/CompanionService";
 import { WokaService } from "./services/WokaService";
 import { UserController } from "./controllers/UserController";
@@ -33,6 +34,7 @@ import { MatrixRoomAreaController } from "./controllers/MatrixRoomAreaController
 import { LocalScriptController } from "./controllers/LocalScriptController";
 import { LivekitWebhookController } from "./controllers/LivekitWebhookController";
 import { videoQualityAnalyticsQueue } from "./services/VideoQualityAnalyticsQueue";
+import { AgentIdentityController } from "./controllers/AgentIdentityController";
 
 const VIDEO_QUALITY_ANALYTICS_CAPABILITY = "api/analytics/video-quality-batch";
 
@@ -105,6 +107,9 @@ class App {
         new OpenIdProfileController(this.app);
         new PingController(this.app);
         new LocalScriptController(this.app);
+        if (AGENT_IDENTITY_TOKEN !== undefined) {
+            new AgentIdentityController(this.app, AGENT_IDENTITY_TOKEN, { createServiceAuthToken });
+        }
 
         if (ENABLE_OPENAPI_ENDPOINT) {
             new SwaggerController(this.app);

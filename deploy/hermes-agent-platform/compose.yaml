@@ -1,0 +1,188 @@
+name: workadventure-agent-platform
+
+services:
+  traefik:
+    image: traefik:v3.6.1
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?set ACME_EMAIL}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --ping=true
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_certs:/letsencrypt
+    healthcheck:
+      test: [CMD, traefik, healthcheck, --ping]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks: [edge]
+
+  postgres:
+    image: postgres:17.6-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agent_platform}
+      POSTGRES_USER: ${POSTGRES_USER:-agent_platform}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [internal]
+
+  redis:
+    image: redis:8.2.1-bookworm
+    command: [redis-server, --appendonly, "yes", --save, "60", "1000"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [internal]
+
+  agent-platform:
+    image: ${AGENT_PLATFORM_IMAGE:?set AGENT_PLATFORM_IMAGE}:${AGENT_PLATFORM_IMAGE_TAG:?set AGENT_PLATFORM_IMAGE_TAG}
+    build:
+      context: ../..
+      dockerfile: agent-platform/Dockerfile
+    environment:
+      NODE_ENV: production
+      AGENT_PLATFORM_STORAGE: postgres
+      AGENT_PLATFORM_ADMIN_TOKEN_FILE: /run/secrets/agent_platform_admin_token
+      HERMES_CONNECTOR_TOKEN_FILE: /run/secrets/hermes_connector_token
+      DATABASE_URL_FILE: /run/secrets/database_url
+      REDIS_URL_FILE: /run/secrets/redis_url
+      MAP_STORAGE_AUTHORIZATION_FILE: /run/secrets/map_storage_authorization
+      AGENT_IDENTITY_TOKEN_FILE: /run/secrets/agent_identity_token
+      AGENT_RUNTIME_ENABLED: "true"
+      AGENT_IDENTITY_BROKER_URL: ${AGENT_IDENTITY_BROKER_URL:?set AGENT_IDENTITY_BROKER_URL}
+      WORKADVENTURE_PUSHER_WS_URL: ${WORKADVENTURE_PUSHER_WS_URL:?set WORKADVENTURE_PUSHER_WS_URL}
+      MAP_STORAGE_URL: ${MAP_STORAGE_URL:?set MAP_STORAGE_URL}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-12}
+      ADMIN_RATE_LIMIT: ${ADMIN_RATE_LIMIT:-120}
+      CONNECTOR_RATE_LIMIT: ${CONNECTOR_RATE_LIMIT:-30}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      IDEMPOTENCY_RETENTION_HOURS: ${IDEMPOTENCY_RETENTION_HOURS:-24}
+      AGENT_MAX_ACTIVE: ${AGENT_MAX_ACTIVE:-10}
+      MEDIA_MAX_SESSIONS: ${MEDIA_MAX_SESSIONS:-2}
+    secrets:
+      - agent_platform_admin_token
+      - hermes_connector_token
+      - database_url
+      - redis_url
+      - map_storage_authorization
+      - agent_identity_token
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.agent-platform.rule: Host(`${AGENT_PLATFORM_DOMAIN:?set AGENT_PLATFORM_DOMAIN}`) && (PathPrefix(`/api/`) || PathPrefix(`/connector/`) || PathPrefix(`/health/`) || PathPrefix(`/documentation`))
+      traefik.http.routers.agent-platform.entrypoints: websecure
+      traefik.http.routers.agent-platform.tls.certresolver: letsencrypt
+      traefik.http.routers.agent-platform.middlewares: agent-platform-ratelimit,agent-platform-security
+      traefik.http.middlewares.agent-platform-ratelimit.ratelimit.average: "30"
+      traefik.http.middlewares.agent-platform-ratelimit.ratelimit.burst: "60"
+      traefik.http.middlewares.agent-platform-security.headers.stsseconds: "31536000"
+      traefik.http.middlewares.agent-platform-security.headers.contenttypenosniff: "true"
+      traefik.http.middlewares.agent-platform-security.headers.framedeny: "true"
+      traefik.http.services.agent-platform.loadbalancer.server.port: "3200"
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 3G }
+        reservations: { cpus: "0.25", memory: 256M }
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks: [edge, internal]
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - ${PROMETHEUS_LISTEN_ADDRESS:-127.0.0.1}:9090:9090
+    depends_on: [agent-platform, alertmanager]
+    restart: unless-stopped
+    networks: [internal]
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    command: [--config.file=/etc/alertmanager/alertmanager.yml, --storage.path=/alertmanager]
+    volumes:
+      - ./runtime/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    restart: unless-stopped
+    networks: [internal]
+
+  livekit:
+    profiles: [pilot-media]
+    image: livekit/livekit-server:v1.10.1
+    command: [--config, /etc/livekit.yaml]
+    volumes:
+      - ./runtime/livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - 7881:7881/tcp
+      - ${LIVEKIT_RTC_UDP_PORT:-7882}:7882/udp
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.livekit.rule: Host(`${LIVEKIT_DOMAIN:?set LIVEKIT_DOMAIN}`)
+      traefik.http.routers.livekit.entrypoints: websecure
+      traefik.http.routers.livekit.tls.certresolver: letsencrypt
+      traefik.http.services.livekit.loadbalancer.server.port: "7880"
+    depends_on: [redis]
+    restart: unless-stopped
+    networks: [edge, internal]
+
+  coturn:
+    profiles: [pilot-media]
+    image: coturn/coturn:4.17.2-r0
+    command: [--config, /etc/coturn/turnserver.conf]
+    volumes:
+      - ./runtime/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    network_mode: host
+    restart: unless-stopped
+
+secrets:
+  agent_platform_admin_token: { file: ./secrets/agent_platform_admin_token }
+  hermes_connector_token: { file: ./secrets/hermes_connector_token }
+  agent_identity_token: { file: ./secrets/agent_identity_token }
+  postgres_password: { file: ./secrets/postgres_password }
+  database_url: { file: ./secrets/database_url }
+  redis_url: { file: ./secrets/redis_url }
+  map_storage_authorization: { file: ./secrets/map_storage_authorization }
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  alertmanager_data:
+  traefik_certs:
+
+networks:
+  edge:
+  internal:
+    internal: true

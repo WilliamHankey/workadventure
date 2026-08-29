@@ -20,6 +20,7 @@ export const AuthTokenData = z.object({
         }, z.string().array())
         .optional(),
     matrixUserId: z.string().optional(),
+    serviceIdentity: z.boolean().optional(),
 });
 export type AuthTokenData = z.infer<typeof AuthTokenData>;
 
@@ -47,6 +48,18 @@ export const tokenInvalidException = "tokenInvalid";
 
 const secret = new TextEncoder().encode(SECRET_KEY ?? "");
 const adminSocketsSecret = new TextEncoder().encode(ADMIN_SOCKETS_TOKEN ?? "");
+
+export const createServiceAuthToken = async (identifier: string, username: string): Promise<string> =>
+    new SignJWT({
+        identifier,
+        username,
+        tags: ["bot", "hermes-agent"],
+        serviceIdentity: true,
+    })
+        .setIssuedAt()
+        .setExpirationTime("15m")
+        .setProtectedHeader({ alg: "HS256" })
+        .sign(secret);
 
 export class JWTTokenManager {
     public async verifyAdminSocketToken(token: string): Promise<AdminSocketTokenData> {
